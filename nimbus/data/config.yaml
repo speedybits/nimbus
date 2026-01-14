@@ -1,0 +1,38 @@
+# Nimbus Default Configuration
+# Override with environment variables (NIMBUS_*) or ~/.nimbus/config.yaml
+
+sensors:
+  lidar_topic: "/scan"
+  odom_topic: "/odom_raw"
+  imu_topic: "/imu"
+  safety_radius: 0.30       # Robot radius + margin (meters)
+  max_range: 3.5            # Maximum LIDAR range to consider (meters)
+  min_range: 0.05           # Minimum LIDAR range (meters)
+
+navigation:
+  max_linear_speed: 0.30    # Maximum forward speed (m/s)
+  max_angular_speed: 1.0    # Maximum rotation speed (rad/s)
+
+  # VFH parameters
+  vfh_sectors: 72           # Polar histogram sectors (5 deg each)
+  vfh_threshold_high: 0.7   # Blocked threshold
+  vfh_threshold_low: 0.3    # Clear threshold
+
+  # Safety thresholds
+  emergency_distance: 0.15  # Full stop distance (meters)
+  caution_distance: 0.40    # Slow down distance (meters)
+  emergency_timeout: 5.0    # Recovery timeout (seconds)
+
+api:
+  rest_enabled: true
+  rest_host: "0.0.0.0"
+  rest_port: 8080
+  websocket_enabled: true
+  websocket_rate_hz: 10.0   # Telemetry update rate
+
+agent:
+  auto_start: true
+  docker_image: "microros/micro-ros-agent:humble"
+  device: "/dev/ttyACM0"
+  baudrate: 115200
+  container_name: "nimbus_microros_agent"
