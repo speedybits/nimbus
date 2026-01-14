@@ -68,9 +68,19 @@ class AgentConfig:
 
     auto_start: bool = True
     docker_image: str = "microros/micro-ros-agent:humble"
+    container_name: str = "nimbus_microros_agent"
+
+    # Transport mode: "serial" or "wifi"
+    transport: str = "serial"
+
+    # Serial settings (when transport == "serial")
     device: str = "/dev/ttyACM0"
     baudrate: int = 115200
-    container_name: str = "nimbus_microros_agent"
+
+    # WiFi/UDP settings (when transport == "wifi")
+    agent_ip: str = ""       # Empty = auto-detect local IP
+    agent_port: int = 8090   # UDP port for Micro-ROS agent
+    ros_domain_id: int = 20  # ROS2 domain ID
 
 
 @dataclass
@@ -170,6 +180,10 @@ class NimbusConfig:
             "NIMBUS_AGENT_AUTO_START": ("agent", "auto_start", lambda x: x.lower() == "true"),
             "NIMBUS_AGENT_DEVICE": ("agent", "device", str),
             "NIMBUS_AGENT_BAUDRATE": ("agent", "baudrate", int),
+            "NIMBUS_AGENT_TRANSPORT": ("agent", "transport", str),
+            "NIMBUS_AGENT_IP": ("agent", "agent_ip", str),
+            "NIMBUS_AGENT_PORT": ("agent", "agent_port", int),
+            "NIMBUS_ROS_DOMAIN_ID": ("agent", "ros_domain_id", int),
         }
 
         for env_var, (section, key, converter) in mappings.items():

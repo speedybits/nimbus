@@ -34,9 +34,12 @@ Usage: nimbus [OPTIONS] COMMAND [ARGS]...
 │ goto        Navigate to coordinates.                                         │
 │ behaviors   List available behaviors.                                        │
 │ behavior    Set active behavior.                                             │
+│ explore     Start AI-driven exploration with Ollama.                         │
 │ test        Run Nimbus test suite.                                           │
 │ agent       Manage Micro-ROS agent.                                          │
 │ version     Show Nimbus version.                                             │
+│ memory      Manage exploration memories                                      │
+│ wifi        WiFi configuration for Yahboom robots                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -332,7 +335,7 @@ test_safety.py::TestSafetyController::test_speed_reduction_in_caution PASSED
 Manage the Micro-ROS agent Docker container.
 
 ```bash
-nimbus agent ACTION
+nimbus agent ACTION [OPTIONS]
 ```
 
 ### Actions
@@ -343,28 +346,55 @@ nimbus agent ACTION
 | `stop` | Stop the agent container |
 | `status` | Check if agent is running |
 
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--transport TEXT` | Transport mode: `serial` or `wifi` |
+
 ### Examples
 
 ```bash
-# Start the agent
+# Start with configured transport (default: serial)
 nimbus agent start
-# Output: Micro-ROS agent started
+
+# Start in WiFi/UDP mode
+nimbus agent start --transport wifi
+# Output: Micro-ROS agent started (wifi mode)
+#         Listening on UDP port 8090
+#         Agent IP: 192.168.1.100
+
+# Start in serial mode
+nimbus agent start --transport serial
+# Output: Micro-ROS agent started (serial mode)
+#         Device: /dev/ttyACM0
 
 # Check status
 nimbus agent status
 # Output: Micro-ROS agent is running
+#         Transport: wifi
 #         Container: a1b2c3d4e5f6
+#         Agent IP: 192.168.1.100
+#         UDP Port: 8090
 
 # Stop the agent
 nimbus agent stop
 # Output: Micro-ROS agent stopped
 ```
 
+### Transport Modes
+
+| Mode | Connection | Use Case |
+|------|------------|----------|
+| `serial` | USB cable (`/dev/ttyACM0`) | Development, debugging |
+| `wifi` | UDP over WiFi (port 8090) | Untethered operation |
+
 ### Requirements
 
 - Docker must be installed
 - User must be in `docker` group or run as root
-- USB device (`/dev/ttyACM0`) must be connected
+- **Serial mode**: USB device must be connected
+- **WiFi mode**: Robot must be configured with `nimbus wifi setup`
 
 ---
 
@@ -380,6 +410,148 @@ nimbus version
 
 ```
 Nimbus version 0.1.0
+```
+
+---
+
+## nimbus wifi
+
+Configure WiFi connectivity for Yahboom robots. These commands allow you to set up the robot for wireless operation.
+
+### nimbus wifi setup
+
+Interactive wizard to configure WiFi on the robot via USB.
+
+```bash
+nimbus wifi setup [OPTIONS]
+```
+
+#### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--ssid, -s TEXT` | (prompt) | WiFi network name |
+| `--password, -p TEXT` | (prompt) | WiFi password |
+| `--port TEXT` | (auto) | Serial port for USB connection |
+| `--agent-ip TEXT` | (auto) | IP address of agent host |
+| `--agent-port INTEGER` | `8090` | UDP port for Micro-ROS agent |
+| `--domain-id INTEGER` | `20` | ROS2 domain ID |
+| `--no-reboot` | False | Don't reboot robot after configuration |
+
+#### Examples
+
+```bash
+# Interactive setup (prompts for all values)
+nimbus wifi setup
+
+# Non-interactive setup
+nimbus wifi setup --ssid MyNetwork --password secret123
+
+# Specify agent IP manually
+nimbus wifi setup --ssid MyNetwork --agent-ip 192.168.1.100
+
+# Configure without rebooting
+nimbus wifi setup --ssid MyNetwork --no-reboot
+```
+
+#### Output
+
+```
+╭─────────── Nimbus WiFi Setup Wizard ───────────╮
+│     Configure robot for wireless operation      │
+╰────────────────────────────────────────────────╯
+
+Step 1: Serial Connection
+Found serial ports: /dev/ttyUSB0
+Using: /dev/ttyUSB0
+
+Step 2: WiFi Credentials
+WiFi network name (SSID): MyNetwork
+WiFi password: ********
+Network: MyNetwork
+
+Step 3: Agent Configuration
+Use detected IP address (192.168.1.100)? [Y/n]: y
+Agent IP: 192.168.1.100
+Agent Port: 8090
+ROS Domain ID: 20
+
+Step 4: Apply Configuration
+Apply this configuration to the robot? [Y/n]: y
+
+WiFi configuration complete!
+
+Next steps:
+  1. Disconnect the USB cable
+  2. Power cycle the robot
+  3. Wait 10-15 seconds for WiFi connection
+  4. Run: nimbus agent start --transport wifi
+```
+
+---
+
+### nimbus wifi status
+
+Read current WiFi configuration from the robot (requires USB connection).
+
+```bash
+nimbus wifi status [OPTIONS]
+```
+
+#### Options
+
+| Option | Description |
+|--------|-------------|
+| `--port TEXT` | Serial port (auto-detect if not specified) |
+
+#### Output
+
+```
+╭─────────── Robot Configuration ───────────╮
+│ Property         │ Value                   │
+├──────────────────┼─────────────────────────┤
+│ Firmware Version │ 1.2.3                   │
+│ WiFi SSID        │ MyNetwork               │
+│ Agent IP         │ 192.168.1.100           │
+│ Agent Port       │ 8090                    │
+│ Transport Mode   │ wifi                    │
+│ ROS Domain ID    │ 20                      │
+╰───────────────────────────────────────────╯
+```
+
+---
+
+### nimbus wifi test
+
+Test WiFi connectivity to the robot.
+
+```bash
+nimbus wifi test [OPTIONS]
+```
+
+#### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--timeout, -t FLOAT` | `5.0` | Test timeout in seconds |
+
+#### Output (Success)
+
+```
+Testing connection to 192.168.1.100:8090...
+Micro-ROS agent is running
+Robot topics detected!
+  ✓ /scan
+  ✓ /odom_raw
+  ✓ /cmd_vel
+```
+
+#### Output (Agent Not Running)
+
+```
+Testing connection to 192.168.1.100:8090...
+Micro-ROS agent is not running
+Start it with: nimbus agent start --transport wifi
 ```
 
 ---
@@ -422,6 +594,11 @@ These environment variables affect CLI behavior:
 | `NIMBUS_API_PORT` | REST API port (default: 8080) |
 | `NIMBUS_MAX_SPEED` | Maximum linear speed (default: 0.30) |
 | `NIMBUS_SAFETY_RADIUS` | Safety radius in meters (default: 0.30) |
+| `NIMBUS_AGENT_TRANSPORT` | Agent transport mode: `serial` or `wifi` (default: serial) |
+| `NIMBUS_AGENT_DEVICE` | Serial device path (default: /dev/ttyACM0) |
+| `NIMBUS_AGENT_IP` | Agent IP for WiFi mode (default: auto-detect) |
+| `NIMBUS_AGENT_PORT` | UDP port for WiFi mode (default: 8090) |
+| `NIMBUS_ROS_DOMAIN_ID` | ROS2 domain ID (default: 20) |
 
 ---
 

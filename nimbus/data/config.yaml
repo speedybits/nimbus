@@ -33,6 +33,16 @@ api:
 agent:
   auto_start: true
   docker_image: "microros/micro-ros-agent:humble"
+  container_name: "nimbus_microros_agent"
+
+  # Transport mode: "serial" or "wifi"
+  transport: "serial"
+
+  # Serial settings (used when transport: "serial")
   device: "/dev/ttyACM0"
   baudrate: 115200
-  container_name: "nimbus_microros_agent"
+
+  # WiFi/UDP settings (used when transport: "wifi")
+  agent_ip: ""              # Empty = auto-detect local IP
+  agent_port: 8090          # UDP port for Micro-ROS agent
+  ros_domain_id: 20         # ROS2 domain ID

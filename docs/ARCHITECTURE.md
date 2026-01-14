@@ -61,10 +61,15 @@ Nimbus follows these core principles:
          │                    │                    │
 ┌──────────────────────────────────────────────────────────────────┐
 │                    Micro-ROS Agent (Docker)                       │
+│  Serial mode: /dev/ttyACM0 @ 115200                               │
+│  WiFi mode: UDP port 8090                                         │
 └──────────────────────────────────────────────────────────────────┘
+                              │
+                    Serial (USB) or WiFi (UDP)
                               │
 ┌──────────────────────────────────────────────────────────────────┐
 │                    ESP32 + Physical Robot                         │
+│  Yahboom G1 with Micro-ROS firmware                               │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -184,6 +189,39 @@ class NimbusConfig:
 2. User config (`~/.nimbus/config.yaml`)
 3. Project config (`./nimbus.yaml`)
 4. Default values
+
+### Network Utilities (`core/network.py`)
+
+Utilities for WiFi connectivity:
+
+```python
+def get_local_ip() -> str:
+    """Get best local IP for robot communication."""
+
+def resolve_hostname(hostname: str) -> str:
+    """Resolve hostname to IP, supports mDNS (.local)."""
+
+def find_serial_ports() -> List[str]:
+    """Auto-detect available serial ports."""
+```
+
+### Robot Configurator (`core/robot_config.py`)
+
+Serial protocol for configuring Yahboom ESP32 robots:
+
+```python
+class RobotConfigurator:
+    """Configure ESP32 via serial for WiFi operation."""
+
+    def set_wifi(credentials: WiFiCredentials) -> None
+    def set_udp_agent(config: UDPAgentConfig) -> None
+    def set_transport(mode: int) -> None
+    def reboot() -> None
+    def read_config() -> RobotInfo
+```
+
+Used by `nimbus wifi setup` to send WiFi credentials and agent
+settings to the robot before wireless operation.
 
 ## Navigation System
 

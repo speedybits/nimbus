@@ -443,24 +443,36 @@ def test(
 @app.command()
 def agent(
     action: str = typer.Argument(..., help="Action: start, stop, status"),
+    transport: Optional[str] = typer.Option(None, help="Transport mode: serial or wifi"),
 ):
     """
     Manage Micro-ROS agent.
 
     Examples:
-        nimbus agent start
+        nimbus agent start                    # Use configured transport
+        nimbus agent start --transport wifi   # Force WiFi mode
         nimbus agent stop
         nimbus agent status
     """
     from nimbus.core.agent import MicroROSAgent
+    from nimbus.core.config import NimbusConfig
 
-    agent_mgr = MicroROSAgent()
+    config = NimbusConfig.load()
+    agent_mgr = MicroROSAgent(config.agent)
 
     if action == "start":
-        with console.status("[bold green]Starting Micro-ROS agent..."):
-            success = agent_mgr.start()
+        mode = transport or config.agent.transport
+        with console.status(f"[bold green]Starting Micro-ROS agent ({mode})..."):
+            success = agent_mgr.start(transport=transport)
         if success:
-            console.print("[green]Micro-ROS agent started[/green]")
+            console.print(f"[green]Micro-ROS agent started[/green] ({mode} mode)")
+            if mode == "wifi":
+                from nimbus.core.network import get_local_ip
+                agent_ip = config.agent.agent_ip or get_local_ip()
+                console.print(f"  Listening on UDP port {config.agent.agent_port}")
+                console.print(f"  Agent IP: {agent_ip}")
+            else:
+                console.print(f"  Device: {config.agent.device}")
         else:
             console.print("[red]Failed to start Micro-ROS agent[/red]")
             raise typer.Exit(1)
@@ -474,14 +486,241 @@ def agent(
         status = agent_mgr.status()
         if status["running"]:
             console.print(f"[green]Micro-ROS agent is running[/green]")
+            console.print(f"  Transport: {status.get('transport', 'unknown')}")
             console.print(f"  Container: {status.get('container_id', 'unknown')[:12]}")
+            if status.get("transport") == "wifi":
+                console.print(f"  Agent IP: {status.get('agent_ip', 'unknown')}")
+                console.print(f"  UDP Port: {status.get('agent_port', 'unknown')}")
+            else:
+                console.print(f"  Device: {status.get('device', 'unknown')}")
         else:
             console.print("[yellow]Micro-ROS agent is not running[/yellow]")
+            console.print(f"  Configured transport: {config.agent.transport}")
 
     else:
         console.print(f"[red]Unknown action:[/red] {action}")
         console.print("Valid actions: start, stop, status")
         raise typer.Exit(1)
+
+
+# WiFi subcommand group
+wifi_app = typer.Typer(help="WiFi configuration for Yahboom robots")
+app.add_typer(wifi_app, name="wifi")
+
+
+@wifi_app.command("setup")
+def wifi_setup(
+    ssid: Optional[str] = typer.Option(None, "--ssid", "-s", help="WiFi network name"),
+    password: Optional[str] = typer.Option(None, "--password", "-p", help="WiFi password"),
+    port: Optional[str] = typer.Option(None, "--port", help="Serial port (auto-detect if not specified)"),
+    agent_ip: Optional[str] = typer.Option(None, "--agent-ip", help="Agent IP (auto-detect if not specified)"),
+    agent_port: int = typer.Option(8090, "--agent-port", help="Agent UDP port"),
+    domain_id: int = typer.Option(20, "--domain-id", help="ROS2 domain ID"),
+    no_reboot: bool = typer.Option(False, "--no-reboot", help="Don't reboot after configuration"),
+):
+    """
+    Configure WiFi on Yahboom robot via USB.
+
+    This wizard sends WiFi credentials and agent settings to the
+    ESP32 firmware. Connect the robot via USB before running.
+
+    Examples:
+        nimbus wifi setup
+        nimbus wifi setup --ssid MyNetwork --agent-ip 192.168.1.100
+    """
+    from nimbus.core.network import find_serial_ports, get_local_ip
+    from nimbus.core.robot_config import (
+        RobotConfigurator, WiFiCredentials, UDPAgentConfig, TRANSPORT_WIFI_UDP
+    )
+
+    console.print(Panel.fit(
+        "[bold blue]Nimbus WiFi Setup Wizard[/bold blue]",
+        subtitle="Configure robot for wireless operation"
+    ))
+
+    # Step 1: Find serial port
+    console.print("\n[bold]Step 1:[/bold] Serial Connection")
+
+    if port:
+        selected_port = port
+    else:
+        ports = find_serial_ports()
+        if not ports:
+            console.print("[red]No serial devices found.[/red]")
+            console.print("Please connect the robot via USB and try again.")
+            raise typer.Exit(1)
+
+        console.print(f"Found serial ports: {', '.join(ports)}")
+        if len(ports) == 1:
+            selected_port = ports[0]
+            console.print(f"[green]Using:[/green] {selected_port}")
+        else:
+            selected_port = typer.prompt("Select port", default=ports[0])
+
+    # Step 2: Get WiFi credentials
+    console.print("\n[bold]Step 2:[/bold] WiFi Credentials")
+
+    if not ssid:
+        ssid = typer.prompt("WiFi network name (SSID)")
+    if not password:
+        password = typer.prompt("WiFi password", hide_input=True)
+
+    console.print(f"[green]Network:[/green] {ssid}")
+
+    # Step 3: Get agent address
+    console.print("\n[bold]Step 3:[/bold] Agent Configuration")
+
+    if not agent_ip:
+        detected_ip = get_local_ip()
+        use_detected = typer.confirm(f"Use detected IP address ({detected_ip})?", default=True)
+        if use_detected:
+            agent_ip = detected_ip
+        else:
+            agent_ip = typer.prompt("Enter agent IP address")
+
+    console.print(f"[green]Agent IP:[/green] {agent_ip}")
+    console.print(f"[green]Agent Port:[/green] {agent_port}")
+    console.print(f"[green]ROS Domain ID:[/green] {domain_id}")
+
+    # Step 4: Confirm and apply
+    console.print("\n[bold]Step 4:[/bold] Apply Configuration")
+
+    if not typer.confirm("Apply this configuration to the robot?", default=True):
+        console.print("[yellow]Configuration cancelled.[/yellow]")
+        raise typer.Abort()
+
+    try:
+        with console.status("[bold green]Connecting to robot..."):
+            configurator = RobotConfigurator(selected_port)
+
+        with console.status("[bold green]Sending WiFi configuration..."):
+            configurator.set_wifi(WiFiCredentials(ssid, password))
+
+        with console.status("[bold green]Sending agent configuration..."):
+            configurator.set_udp_agent(UDPAgentConfig(agent_ip, agent_port))
+            configurator.set_transport(TRANSPORT_WIFI_UDP)
+            configurator.set_ros_domain_id(domain_id)
+
+        if not no_reboot:
+            with console.status("[bold green]Rebooting robot..."):
+                configurator.reboot()
+
+        configurator.close()
+
+        console.print("\n[bold green]WiFi configuration complete![/bold green]")
+        console.print("\nNext steps:")
+        console.print("  1. Disconnect the USB cable")
+        console.print("  2. Power cycle the robot")
+        console.print("  3. Wait 10-15 seconds for WiFi connection")
+        console.print(f"  4. Run: [cyan]nimbus agent start --transport wifi[/cyan]")
+
+    except Exception as e:
+        console.print(f"\n[red]Configuration failed:[/red] {e}")
+        console.print("\nTroubleshooting:")
+        console.print("  - Check USB cable connection")
+        console.print("  - Ensure robot is powered on")
+        console.print("  - Try a different USB port")
+        raise typer.Exit(1)
+
+
+@wifi_app.command("status")
+def wifi_status(
+    port: Optional[str] = typer.Option(None, "--port", help="Serial port"),
+):
+    """
+    Show current WiFi configuration on the robot.
+
+    Robot must be connected via USB.
+    """
+    from nimbus.core.network import find_serial_ports
+    from nimbus.core.robot_config import RobotConfigurator
+
+    # Find port
+    if not port:
+        ports = find_serial_ports()
+        if not ports:
+            console.print("[red]No serial devices found.[/red]")
+            raise typer.Exit(1)
+        port = ports[0]
+
+    try:
+        with console.status("[bold green]Reading robot configuration..."):
+            configurator = RobotConfigurator(port)
+            info = configurator.read_config()
+            configurator.close()
+
+        table = Table(title="Robot Configuration")
+        table.add_column("Property", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Firmware Version", info.firmware_version or "unknown")
+        table.add_row("WiFi SSID", info.wifi_ssid or "not configured")
+        table.add_row("Agent IP", info.agent_ip or "not configured")
+        table.add_row("Agent Port", str(info.agent_port) if info.agent_port else "not configured")
+        table.add_row("Transport Mode", info.car_type or "unknown")
+        table.add_row("ROS Domain ID", str(info.ros_domain_id) if info.ros_domain_id is not None else "unknown")
+
+        console.print(table)
+
+    except Exception as e:
+        console.print(f"[red]Failed to read configuration:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@wifi_app.command("test")
+def wifi_test(
+    timeout: float = typer.Option(5.0, "--timeout", "-t", help="Test timeout in seconds"),
+):
+    """
+    Test WiFi connectivity to robot.
+
+    Checks if the Micro-ROS agent can receive connections
+    on the configured UDP port.
+    """
+    from nimbus.core.config import NimbusConfig
+    from nimbus.core.network import get_local_ip
+
+    config = NimbusConfig.load()
+    agent_ip = config.agent.agent_ip or get_local_ip()
+    agent_port = config.agent.agent_port
+
+    console.print(f"Testing connection to {agent_ip}:{agent_port}...")
+
+    # Check if agent is running
+    from nimbus.core.agent import MicroROSAgent
+    agent_mgr = MicroROSAgent(config.agent)
+
+    if agent_mgr.is_running():
+        console.print("[green]Micro-ROS agent is running[/green]")
+
+        # Try to check ROS2 topics
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["ros2", "topic", "list"],
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            if result.returncode == 0:
+                topics = [t for t in result.stdout.strip().split("\n") if t]
+                if "/scan" in topics or "/odom_raw" in topics:
+                    console.print("[green]Robot topics detected![/green]")
+                    for topic in ["/scan", "/odom_raw", "/cmd_vel"]:
+                        status = "[green]✓[/green]" if topic in topics else "[yellow]○[/yellow]"
+                        console.print(f"  {status} {topic}")
+                else:
+                    console.print("[yellow]Agent running but robot topics not yet visible[/yellow]")
+                    console.print("The robot may still be connecting to WiFi.")
+            else:
+                console.print("[yellow]Could not list ROS2 topics[/yellow]")
+        except FileNotFoundError:
+            console.print("[yellow]ROS2 not found - cannot verify topics[/yellow]")
+        except subprocess.TimeoutExpired:
+            console.print("[yellow]Timeout waiting for ROS2 topics[/yellow]")
+    else:
+        console.print("[yellow]Micro-ROS agent is not running[/yellow]")
+        console.print(f"Start it with: [cyan]nimbus agent start --transport wifi[/cyan]")
 
 
 @app.command()
