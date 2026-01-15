@@ -201,10 +201,11 @@ class NimbusRunner:
         # Get velocity from behavior
         velocity = self._behavior_manager.compute(self._context)
 
-        # Apply safety filtering
+        # Apply safety filtering (only for obstacles in forward arc)
         closest = self._context.sensors.closest_obstacle if self._context.sensors else float('inf')
+        obstacle_angle = self._context.sensors.obstacle_direction if self._context.sensors else 0.0
         safe_linear, safe_angular = self._safety.limit_velocity(
-            velocity.linear, velocity.angular, closest
+            velocity.linear, velocity.angular, closest, obstacle_angle
         )
 
         # Smooth velocity

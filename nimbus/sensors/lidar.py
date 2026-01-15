@@ -19,6 +19,11 @@ class LidarConfig:
     max_range: float = 3.5         # Maximum reliable range (m)
     min_range: float = 0.05        # Minimum reliable range (m)
 
+    # Angular exclusion zone (for antenna, camera mount, etc.)
+    # Set both to 0 to disable
+    exclude_start_deg: float = 0.0    # Start of exclusion zone (degrees)
+    exclude_end_deg: float = 0.0      # End of exclusion zone (disabled)
+
 
 class LidarProcessor:
     """
@@ -44,6 +49,16 @@ class LidarProcessor:
         # Sector lookup for each LIDAR angle
         self._sector_lookup = (self._angles_deg / self._sector_size).astype(int)
 
+        # Precompute exclusion mask (True = include, False = exclude)
+        self._include_mask = np.ones(360, dtype=bool)
+        if self.config.exclude_start_deg != self.config.exclude_end_deg:
+            start = self.config.exclude_start_deg
+            end = self.config.exclude_end_deg
+            if start <= end:
+                self._include_mask[(self._angles_deg >= start) & (self._angles_deg < end)] = False
+            else:  # Wraps around 360
+                self._include_mask[(self._angles_deg >= start) | (self._angles_deg < end)] = False
+
     def process(self, ranges: np.ndarray) -> np.ndarray:
         """
         Convert raw LIDAR ranges to polar obstacle histogram.
@@ -61,11 +76,12 @@ class LidarProcessor:
 
         ranges = np.array(ranges, dtype=np.float32)
 
-        # Filter invalid readings
+        # Filter invalid readings and excluded zones
         valid_mask = (
             (ranges > self.config.min_range) &
             (ranges < self.config.max_range) &
-            np.isfinite(ranges)
+            np.isfinite(ranges) &
+            self._include_mask
         )
 
         # Create histogram
@@ -108,11 +124,12 @@ class LidarProcessor:
         """
         ranges = np.array(ranges, dtype=np.float32)
 
-        # Create valid mask
+        # Create valid mask (including exclusion zone filter)
         valid_mask = (
             (ranges > self.config.min_range) &
             (ranges < self.config.max_range) &
-            np.isfinite(ranges)
+            np.isfinite(ranges) &
+            self._include_mask
         )
 
         if not np.any(valid_mask):

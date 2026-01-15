@@ -13,6 +13,7 @@ filtering all velocity requests through safety checks.
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Tuple
+import math
 import time
 
 
@@ -34,6 +35,7 @@ class SafetyConfig:
     max_linear_speed: float = 0.30    # Maximum forward speed (m/s)
     max_angular_speed: float = 1.0    # Maximum rotation speed (rad/s)
     reverse_speed: float = 0.1        # Speed for backing away from obstacles
+    forward_arc_deg: float = 45.0     # Only react to obstacles within ±this angle
 
 
 class SafetyController:
@@ -63,16 +65,29 @@ class SafetyController:
         self._last_level = SafetyLevel.NORMAL
         self._consecutive_emergency_count = 0
 
-    def evaluate(self, closest_distance: float) -> SafetyLevel:
+    def _is_in_forward_arc(self, angle_rad: float) -> bool:
+        """Check if angle is within the forward arc (±forward_arc_deg)."""
+        arc_rad = math.radians(self.config.forward_arc_deg)
+        # Normalize angle to [-pi, pi]
+        angle = math.atan2(math.sin(angle_rad), math.cos(angle_rad))
+        return abs(angle) <= arc_rad
+
+    def evaluate(self, closest_distance: float, obstacle_angle: float = 0.0) -> SafetyLevel:
         """
         Evaluate current safety level based on obstacle proximity.
 
         Args:
             closest_distance: Distance to nearest obstacle (meters)
+            obstacle_angle: Angle to nearest obstacle (radians, 0 = front)
 
         Returns:
             Current SafetyLevel
         """
+        # Only react to obstacles in the forward arc
+        if not self._is_in_forward_arc(obstacle_angle):
+            self._last_level = SafetyLevel.NORMAL
+            return SafetyLevel.NORMAL
+
         if closest_distance < self.config.emergency_distance:
             level = SafetyLevel.EMERGENCY
         elif closest_distance < self.config.caution_distance:
@@ -87,7 +102,8 @@ class SafetyController:
         self,
         linear: float,
         angular: float,
-        closest_distance: float
+        closest_distance: float,
+        obstacle_angle: float = 0.0
     ) -> Tuple[float, float]:
         """
         Apply safety limits to velocity commands.
@@ -99,11 +115,12 @@ class SafetyController:
             linear: Desired linear velocity (m/s)
             angular: Desired angular velocity (rad/s)
             closest_distance: Distance to nearest obstacle (meters)
+            obstacle_angle: Angle to nearest obstacle (radians, 0 = front)
 
         Returns:
             Tuple of (safe_linear, safe_angular) velocities
         """
-        level = self.evaluate(closest_distance)
+        level = self.evaluate(closest_distance, obstacle_angle)
 
         if level == SafetyLevel.EMERGENCY:
             # Track emergency state

@@ -49,6 +49,8 @@ class NavigationConfig:
     emergency_distance: float = 0.15  # full stop (meters)
     caution_distance: float = 0.40    # slow down (meters)
     emergency_timeout: float = 5.0    # seconds before recovery
+    reverse_speed: float = 0.1        # speed for backing away from obstacles
+    forward_arc_deg: float = 45.0     # only react to obstacles within ±this angle
 
 
 @dataclass
