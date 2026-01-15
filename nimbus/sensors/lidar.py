@@ -21,8 +21,8 @@ class LidarConfig:
 
     # Angular exclusion zone (for antenna, camera mount, etc.)
     # Set both to 0 to disable
-    exclude_start_deg: float = 0.0    # Start of exclusion zone (degrees)
-    exclude_end_deg: float = 0.0      # End of exclusion zone (disabled)
+    exclude_start_deg: float = 10.0   # Start of exclusion zone (degrees)
+    exclude_end_deg: float = 25.0     # End of exclusion zone - WiFi antenna at ~15°
 
 
 class LidarProcessor:
@@ -123,13 +123,27 @@ class LidarProcessor:
             Returns (inf, 0) if no valid obstacles found
         """
         ranges = np.array(ranges, dtype=np.float32)
+        num_readings = len(ranges)
+
+        # Create exclusion mask for this number of readings
+        if self.config.exclude_start_deg != self.config.exclude_end_deg:
+            degrees_per_reading = 360.0 / num_readings
+            angles = np.arange(num_readings) * degrees_per_reading
+            start = self.config.exclude_start_deg
+            end = self.config.exclude_end_deg
+            if start <= end:
+                include_mask = ~((angles >= start) & (angles < end))
+            else:  # Wraps around 360
+                include_mask = ~((angles >= start) | (angles < end))
+        else:
+            include_mask = np.ones(num_readings, dtype=bool)
 
         # Create valid mask (including exclusion zone filter)
         valid_mask = (
             (ranges > self.config.min_range) &
             (ranges < self.config.max_range) &
             np.isfinite(ranges) &
-            self._include_mask
+            include_mask
         )
 
         if not np.any(valid_mask):
@@ -141,11 +155,21 @@ class LidarProcessor:
 
         distance = float(ranges_filtered[min_idx])
 
-        # Convert index to angle
+        # Convert index to angle (handle any number of readings, not just 360)
         # LIDAR typically: index 0 = front (0 deg), increases CCW
         # We want: 0 = front, positive = left, negative = right
-        angle_deg = min_idx if min_idx <= 180 else min_idx - 360
+        num_readings = len(ranges)
+        degrees_per_reading = 360.0 / num_readings
+        angle_deg = min_idx * degrees_per_reading
+        if angle_deg > 180:
+            angle_deg -= 360
         angle_rad = np.deg2rad(angle_deg)
+
+        # DEBUG: Write to log file to diagnose angle issue
+        if distance < 0.2:
+            with open("/tmp/lidar_debug.log", "a") as f:
+                f.write(f"{num_readings} readings, min_idx={min_idx}, "
+                        f"deg/reading={degrees_per_reading:.2f}, angle={angle_deg:.1f}°, dist={distance:.3f}m\n")
 
         return (distance, angle_rad)
 

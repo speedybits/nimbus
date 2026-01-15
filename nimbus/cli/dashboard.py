@@ -163,33 +163,47 @@ class LiveDashboard:
         max_display_range = 2.0  # meters
         scale = min(width // 2 - 2, height - 2) / max_display_range
 
-        # Plot obstacles (sample every 5 degrees)
-        for i in range(0, 360, 5):
-            if i < len(ranges):
-                distance = ranges[i]
-                if distance < max_display_range and distance > 0.05:
-                    # Convert polar to cartesian
-                    angle_rad = math.radians(i - 90)  # 0 deg = forward = up
-                    r = distance * scale
+        # Plot obstacles
+        num_readings = len(ranges)
+        degrees_per_reading = 360.0 / num_readings if num_readings > 0 else 1.0
+        for i in range(num_readings):
+            distance = ranges[i]
+            if distance < max_display_range and distance > 0.05:
+                # Convert polar to cartesian (index -> actual angle)
+                actual_angle_deg = i * degrees_per_reading
+                angle_rad = math.radians(actual_angle_deg - 90)  # 0 deg = forward = up
+                r = distance * scale
 
-                    x = int(center_x + r * math.cos(angle_rad) * 2)  # *2 for aspect ratio
-                    y = int(center_y - r * math.sin(angle_rad))
+                x = int(center_x + r * math.cos(angle_rad) * 2)  # *2 for aspect ratio
+                y = int(center_y - r * math.sin(angle_rad))
 
-                    if 0 <= x < width and 0 <= y < height:
-                        # Use intensity based on distance
-                        if distance < 0.3:
-                            canvas[y][x] = '#'  # Very close - danger
-                        elif distance < 0.5:
-                            canvas[y][x] = '+'  # Close
-                        else:
-                            canvas[y][x] = '.'  # Normal
+                if 0 <= x < width and 0 <= y < height:
+                    # Use intensity based on distance
+                    if distance < 0.3:
+                        canvas[y][x] = '#'  # Very close - danger
+                    elif distance < 0.5:
+                        canvas[y][x] = '+'  # Close
+                    else:
+                        canvas[y][x] = '.'  # Normal
 
-        # Mark robot position
+        # Mark robot position (draw first so obstacles can overwrite if very close)
         canvas[center_y][center_x] = 'R'
 
         # Mark forward direction
         if center_y > 0:
             canvas[center_y - 1][center_x] = '^'
+
+        # Redraw any VERY close obstacles on top of robot marker
+        for i in range(num_readings):
+            distance = ranges[i]
+            if 0.05 < distance < 0.2:  # Very close - draw on top
+                actual_angle_deg = i * degrees_per_reading
+                angle_rad = math.radians(actual_angle_deg - 90)
+                r = distance * scale
+                x = int(center_x + r * math.cos(angle_rad) * 2)
+                y = int(center_y - r * math.sin(angle_rad))
+                if 0 <= x < width and 0 <= y < height:
+                    canvas[y][x] = '#'
 
         # Build output string with distance info
         lines = [''.join(row) for row in canvas]
