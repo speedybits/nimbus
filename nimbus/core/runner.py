@@ -29,6 +29,7 @@ from nimbus.behaviors.wander import WanderBehavior, SimpleWanderBehavior
 from nimbus.behaviors.goto import GoToBehavior, PatrolBehavior
 from nimbus.behaviors.ai_explore import AIExploreBehavior
 from nimbus.behaviors.explore import ExploreBehavior
+from nimbus.behaviors.pet import PetBehavior
 
 
 class NimbusRunner:
@@ -105,6 +106,7 @@ class NimbusRunner:
             turn_speed=self.config.navigation.max_angular_speed * 0.5,
         ))
         self._behavior_manager.register(AIExploreBehavior())
+        self._behavior_manager.register(PetBehavior())
 
     def _setup_signal_handlers(self) -> None:
         """Setup SIGINT/SIGTERM handlers for graceful shutdown."""
