@@ -73,7 +73,7 @@ class AgentConfig:
     container_name: str = "nimbus_microros_agent"
 
     # Transport mode: "serial" or "wifi"
-    transport: str = "serial"
+    transport: str = "wifi"
 
     # Serial settings (when transport == "serial")
     device: str = "/dev/ttyACM0"

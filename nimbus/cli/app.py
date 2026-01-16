@@ -129,6 +129,77 @@ def stop():
         console.print(f"[red]Error:[/red] {e}")
 
 
+@app.command()
+def connect(
+    timeout: int = typer.Option(15, help="Max seconds to wait for robot connection"),
+    transport: str = typer.Option(None, help="Transport mode: serial or wifi (default: from config)"),
+):
+    """
+    Wait for robot to connect and verify data flow.
+
+    Ensures Micro-ROS agent is running, then waits for LIDAR data
+    to confirm the robot is connected and responsive.
+
+    Examples:
+        nimbus connect
+        nimbus connect --transport wifi
+        nimbus connect --timeout 30
+    """
+    import time
+    from nimbus.core.agent import MicroROSAgent
+    from nimbus.core.config import NimbusConfig
+
+    config = NimbusConfig.load()
+
+    # Override transport if specified
+    if transport:
+        config.agent.transport = transport
+
+    agent = MicroROSAgent(config.agent)
+
+    # Step 1: Ensure agent is running
+    with console.status("[cyan]Checking Micro-ROS agent..."):
+        if not agent.is_running():
+            mode = config.agent.transport
+            console.print(f"[yellow]Starting Micro-ROS agent ({mode} mode)...[/yellow]")
+            if not agent.start():
+                console.print("[red]Failed to start Micro-ROS agent[/red]")
+                console.print("[dim]Check that Docker is running and the image is available[/dim]")
+                raise typer.Exit(1)
+            time.sleep(2)  # Give agent time to initialize
+            console.print(f"[green]✓[/green] Agent started ({mode} mode)")
+        else:
+            console.print("[green]✓[/green] Agent already running")
+
+    # Step 2: Wait for robot data
+    console.print("[cyan]Waiting for robot to connect...[/cyan]")
+    console.print("[dim]If robot doesn't respond, try pressing the reset button on the ESP32[/dim]")
+
+    start_time = time.time()
+    with console.status("[cyan]Scanning for LIDAR data...") as status:
+        while time.time() - start_time < timeout:
+            elapsed = int(time.time() - start_time)
+            status.update(f"[cyan]Waiting for robot... ({elapsed}s / {timeout}s)")
+
+            # Check for data (5 second window to collect enough samples)
+            if agent.wait_for_data("/scan", timeout=5):
+                # Data detected! Get the rate
+                rate = agent.get_topic_rate("/scan", sample_time=3)
+                console.print(f"[bold green]✓ Robot connected![/bold green]")
+                console.print(f"  LIDAR data rate: [cyan]{rate:.1f} Hz[/cyan]")
+                console.print(f"\n[dim]Ready to run: nimbus run --behavior idle[/dim]")
+                raise typer.Exit(0)
+
+    # Timeout reached
+    console.print(f"[bold red]✗ Timeout after {timeout} seconds[/bold red]")
+    console.print("\n[yellow]Troubleshooting steps:[/yellow]")
+    console.print("  1. Check robot power is on (green LED should be solid)")
+    console.print("  2. Press the reset button on the robot's ESP32")
+    console.print("  3. Verify robot is on the same WiFi network")
+    console.print("  4. Run 'nimbus agent status' to check agent status")
+    raise typer.Exit(1)
+
+
 @app.command("goto")
 def goto_cmd(
     x: float = typer.Argument(..., help="X coordinate (meters)"),

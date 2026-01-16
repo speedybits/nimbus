@@ -219,3 +219,58 @@ class MicroROSAgent:
             return result.stdout + result.stderr
         except Exception as e:
             return f"Error getting logs: {e}"
+
+    def wait_for_data(self, topic: str = "/scan", timeout: float = 30.0) -> bool:
+        """
+        Wait for data to flow on a ROS2 topic.
+
+        Args:
+            topic: ROS2 topic to monitor (default: /scan)
+            timeout: Max seconds to wait
+
+        Returns:
+            True if data is flowing, False on timeout
+        """
+        try:
+            # Use shell timeout command since ros2 topic hz runs forever
+            # timeout captures output before killing the process
+            result = subprocess.run(
+                f"timeout {timeout} ros2 topic hz {topic} 2>&1 | head -1",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout + 2
+            )
+            return "average rate:" in result.stdout
+        except subprocess.TimeoutExpired:
+            return False
+        except Exception:
+            return False
+
+    def get_topic_rate(self, topic: str = "/scan", sample_time: float = 3.0) -> float:
+        """
+        Get the current message rate for a topic.
+
+        Args:
+            topic: ROS2 topic to check
+            sample_time: Seconds to sample
+
+        Returns:
+            Message rate in Hz, or 0.0 if not available
+        """
+        try:
+            # Use shell timeout since ros2 topic hz runs forever
+            # grep for the last "average rate" line
+            result = subprocess.run(
+                f"timeout {sample_time} ros2 topic hz {topic} 2>&1 | grep 'average rate' | tail -1",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=sample_time + 2
+            )
+            # Parse "average rate: X.XXX" from output
+            if 'average rate:' in result.stdout:
+                return float(result.stdout.split(':')[1].strip().split()[0])
+        except Exception:
+            pass
+        return 0.0
