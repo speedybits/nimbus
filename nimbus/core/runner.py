@@ -277,6 +277,9 @@ class NimbusRunner:
         """Request graceful shutdown."""
         self._running = False
         self._shutdown_event.set()
+        # Immediately send stop command for safety
+        self._send_stop()
+        self._smoother.reset()
 
     # --- Public API ---
 
@@ -299,6 +302,12 @@ class NimbusRunner:
         success = self._behavior_manager.activate(name)
         if success:
             self._context.set_behavior(name)
+            # Reset smoother to immediately apply new behavior's velocity
+            # (prevents residual motion from previous behavior)
+            self._smoother.reset()
+            # For idle behavior, guarantee immediate stop
+            if name == "idle":
+                self._send_stop()
         return success
 
     @property

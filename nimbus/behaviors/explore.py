@@ -40,6 +40,14 @@ class RecoveryState(Enum):
     TURNING = auto()
 
 
+class DrivingState(Enum):
+    """State machine for plan-then-drive navigation."""
+    PLANNING = auto()   # Analyze LIDAR, pick heading
+    TURNING = auto()    # Rotate to target heading
+    DRIVING = auto()    # Drive forward
+    BACKING = auto()    # Back up to create space
+
+
 class ExploreBehavior(Behavior):
     """
     Systematic exploration with persistent mapping.
@@ -106,6 +114,16 @@ class ExploreBehavior(Behavior):
         self._recovery_start_time: Optional[float] = None
         self._recovery_turn_direction = 1
 
+        # Driving state machine (plan-then-drive)
+        self._driving_state = DrivingState.PLANNING
+        self._target_heading: float = 0.0           # World heading to drive toward
+        self._heading_tolerance: float = 0.17       # ~10 degrees
+        self._max_steering_correction: float = 0.26 # ~15 degrees during DRIVING
+        self._drive_distance: float = 2.0           # Meters to drive before replanning
+        self._drive_start_pose: Optional[Pose2D] = None
+        self._backing_start_time: Optional[float] = None
+        self._backing_duration: float = 1.0         # Seconds to back up
+
     def set_memory(self, memory_name: str) -> None:
         """Switch to a different memory (saves current first)."""
         if self._memory:
@@ -121,9 +139,9 @@ class ExploreBehavior(Behavior):
         except Exception as e:
             print(f"[Explore] Failed to load memory: {e}")
             self._memory = None
-        # Set timer in the past to trigger immediate direction pick on first compute()
         self._last_direction_change = 0.0
         self._reset_recovery()
+        self._reset_driving()
 
     def deactivate(self) -> None:
         """Stop exploration and save memory."""
@@ -136,12 +154,20 @@ class ExploreBehavior(Behavior):
         self._goal_direction = 0.0
         self._last_direction_change = time.time()
         self._reset_recovery()
+        self._reset_driving()
 
     def _reset_recovery(self) -> None:
         """Reset recovery state machine."""
         self._recovery_state = RecoveryState.NONE
         self._blocked_start_time = None
         self._recovery_start_time = None
+
+    def _reset_driving(self) -> None:
+        """Reset driving state machine."""
+        self._driving_state = DrivingState.PLANNING
+        self._target_heading = 0.0
+        self._drive_start_pose = None
+        self._backing_start_time = None
 
     def compute(self, context: RobotContext) -> Optional[Velocity]:
         """Compute exploration velocity."""
@@ -153,19 +179,19 @@ class ExploreBehavior(Behavior):
             return Velocity.stop()
 
     def _compute_internal(self, context: RobotContext) -> Optional[Velocity]:
-        """Internal compute - separated for error handling."""
+        """Internal compute using plan-then-drive state machine."""
         sensors = context.sensors
         if sensors is None:
             return Velocity.stop()
 
-        # Track current pose for direction selection
+        # Track current pose
         self._current_pose = sensors.pose
 
         # Mark current position as visited
         if self._memory and self._current_pose:
             self._memory.mark_visited(self._current_pose)
 
-        # Handle recovery state machine first
+        # Handle recovery state machine first (from getting stuck)
         if self._recovery_state != RecoveryState.NONE:
             return self._handle_recovery(context)
 
@@ -178,59 +204,145 @@ class ExploreBehavior(Behavior):
         else:
             self._blocked_start_time = None
 
-        # Periodically pick new direction toward unexplored areas
-        if time.time() - self._last_direction_change > self.direction_change_interval:
-            self._pick_exploration_direction()
-            self._last_direction_change = time.time()
+        # Driving state machine: PLANNING -> TURNING -> DRIVING -> (BACKING if blocked) -> PLANNING
+        if self._driving_state == DrivingState.PLANNING:
+            return self._handle_planning(context)
+        elif self._driving_state == DrivingState.TURNING:
+            return self._handle_turning(context)
+        elif self._driving_state == DrivingState.DRIVING:
+            return self._handle_driving(context)
+        elif self._driving_state == DrivingState.BACKING:
+            return self._handle_backing(context)
 
-        # Process LIDAR data - need at least some readings
+        return Velocity.stop()
+
+    def _handle_planning(self, context: RobotContext) -> Velocity:
+        """Analyze LIDAR and pick best heading toward unexplored area."""
+        sensors = context.sensors
+        context.set_state(RobotState.NAVIGATING)
+
+        # Process LIDAR
         if len(sensors.lidar_ranges) < 10:
-            context.set_state(RobotState.IDLE)
             return Velocity.stop()
+
+        # Pick direction toward unexplored area
+        self._pick_exploration_direction()
+
+        # Convert goal direction (robot frame) to world heading
+        self._target_heading = self._current_pose.theta + self._goal_direction
+
+        # Normalize to [-pi, pi]
+        while self._target_heading > math.pi:
+            self._target_heading -= 2 * math.pi
+        while self._target_heading < -math.pi:
+            self._target_heading += 2 * math.pi
+
+        # Record start position for distance tracking
+        self._drive_start_pose = self._current_pose
+
+        # Transition to turning
+        self._driving_state = DrivingState.TURNING
+
+        return Velocity(linear=0.0, angular=0.0)
+
+    def _handle_turning(self, context: RobotContext) -> Velocity:
+        """Rotate in place to face target heading."""
+        context.set_state(RobotState.NAVIGATING)
+
+        # Calculate heading error
+        heading_error = self._target_heading - self._current_pose.theta
+
+        # Normalize to [-pi, pi]
+        while heading_error > math.pi:
+            heading_error -= 2 * math.pi
+        while heading_error < -math.pi:
+            heading_error += 2 * math.pi
+
+        # Check if aligned
+        if abs(heading_error) < self._heading_tolerance:
+            self._driving_state = DrivingState.DRIVING
+            self._drive_start_pose = self._current_pose
+            return Velocity(linear=0.0, angular=0.0)
+
+        # Turn toward target heading (slow down as we approach)
+        turn_speed = min(self.turn_speed, abs(heading_error) * 2)
+        turn_dir = 1 if heading_error > 0 else -1
+
+        return Velocity(linear=0.0, angular=turn_speed * turn_dir)
+
+    def _handle_driving(self, context: RobotContext) -> Velocity:
+        """Drive forward with minimal steering corrections."""
+        sensors = context.sensors
+        context.set_state(RobotState.NAVIGATING)
+
+        # Check if we've driven far enough - time to replan
+        if self._drive_start_pose:
+            distance_traveled = self._current_pose.distance_to(self._drive_start_pose)
+            if distance_traveled >= self._drive_distance:
+                self._driving_state = DrivingState.PLANNING
+                return Velocity(linear=0.0, angular=0.0)
+
+        # Process LIDAR
+        if len(sensors.lidar_ranges) < 10:
+            return Velocity.stop()
+
+        # Check if too close to obstacle - back up instead of spinning
+        closest = sensors.closest_obstacle
+        if closest < 0.4:  # Too close - need to back up
+            self._driving_state = DrivingState.BACKING
+            self._backing_start_time = time.time()
+            context.set_state(RobotState.AVOIDING)
+            return Velocity(linear=-self.backup_speed, angular=0.0)
 
         histogram = self._lidar.process(np.array(sensors.lidar_ranges))
 
-        # Use VFH to compute steering
-        steering, blocked = self._vfh.compute_steering(histogram, self._goal_direction)
+        # VFH for obstacle avoidance
+        goal_in_robot_frame = self._target_heading - self._current_pose.theta
+        while goal_in_robot_frame > math.pi:
+            goal_in_robot_frame -= 2 * math.pi
+        while goal_in_robot_frame < -math.pi:
+            goal_in_robot_frame += 2 * math.pi
+
+        steering, blocked = self._vfh.compute_steering(histogram, goal_in_robot_frame)
 
         if blocked:
-            # Track blocked time
-            if self._blocked_start_time is None:
-                self._blocked_start_time = time.time()
-            elif time.time() - self._blocked_start_time > self.stuck_threshold:
-                return self._start_recovery(context, sensors.obstacle_direction)
-
-            # No clear path - rotate in place (turn away from obstacle)
+            # Path is blocked - back up to create space, then replan
+            self._driving_state = DrivingState.BACKING
+            self._backing_start_time = time.time()
             context.set_state(RobotState.AVOIDING)
-            turn_dir = -1 if sensors.obstacle_direction > 0 else 1
-            return Velocity(linear=0.0, angular=self.turn_speed * turn_dir)
+            return Velocity(linear=-self.backup_speed, angular=0.0)
 
-        # Clear - reset blocked timer
-        self._blocked_start_time = None
+        # Limit steering corrections during driving (stay committed to heading)
+        steering = max(-self._max_steering_correction,
+                       min(self._max_steering_correction, steering))
 
-        # Move forward while steering
-        context.set_state(RobotState.NAVIGATING)
-
-        # Proactive obstacle handling - slow down and steer away
-        closest = sensors.closest_obstacle
-        obstacle_angle = sensors.obstacle_direction
-
+        # Proactive obstacle slowdown
         if closest < self.min_safe_distance:
             dist_scale = max(0.2, (closest - 0.15) / (self.min_safe_distance - 0.15))
-            avoidance_strength = 1.0 - dist_scale
-            avoidance_bias = -math.copysign(avoidance_strength * 0.5, obstacle_angle)
-            steering = steering + avoidance_bias
         else:
             dist_scale = 1.0
 
-        # Scale forward speed based on steering
-        steering_scale = 1.0 - min(abs(steering) / 1.5, 0.7)
-        linear = self.forward_speed * steering_scale * dist_scale
-
-        # Convert steering angle to angular velocity
-        angular = steering * 1.5
+        # Drive forward at constant speed (no steering-based slowdown!)
+        linear = self.forward_speed * dist_scale
+        angular = steering * 1.0  # Gentler steering gain
 
         return Velocity(linear=linear, angular=angular)
+
+    def _handle_backing(self, context: RobotContext) -> Velocity:
+        """Back up to create space before replanning."""
+        context.set_state(RobotState.AVOIDING)
+
+        # Check if we've backed up long enough
+        if self._backing_start_time:
+            elapsed = time.time() - self._backing_start_time
+            if elapsed >= self._backing_duration:
+                # Done backing, replan
+                self._driving_state = DrivingState.PLANNING
+                self._backing_start_time = None
+                return Velocity(linear=0.0, angular=0.0)
+
+        # Continue backing up
+        return Velocity(linear=-self.backup_speed, angular=0.0)
 
     def _pick_exploration_direction(self) -> None:
         """Pick direction toward unexplored areas, preferring directions close to current heading."""
@@ -293,10 +405,11 @@ class ExploreBehavior(Behavior):
                 return Velocity(linear=0.0, angular=self.turn_speed * self._recovery_turn_direction)
             else:
                 self._reset_recovery()
-                self._pick_exploration_direction()
+                self._reset_driving()  # Go back to PLANNING after recovery
                 return Velocity(linear=0.0, angular=0.0)
 
         self._reset_recovery()
+        self._reset_driving()
         return Velocity.stop()
 
     @property
@@ -309,6 +422,8 @@ class ExploreBehavior(Behavior):
         status = {
             "goal_direction": self._goal_direction,
             "recovery_state": self._recovery_state.name,
+            "driving_state": self._driving_state.name,
+            "target_heading": self._target_heading,
         }
         if self._memory:
             status["cells_explored"] = len(self._memory.visited_cells)
