@@ -64,18 +64,21 @@ class ExploreBehavior(Behavior):
         memory_name: str = "explore",
         forward_speed: float = 0.2,
         turn_speed: float = 0.5,
-        direction_change_interval: float = 8.0,
+        direction_change_interval: float = 15.0,  # Longer commitment to reach distant areas
         # Recovery parameters
         backup_speed: float = 0.1,
         backup_duration: float = 1.5,
         turn_duration: float = 1.0,
         stuck_threshold: float = 1.0,
         min_safe_distance: float = 0.6,
+        # Exploration parameters
+        exploration_range: float = 5.0,  # How far to look for unexplored areas
     ):
         super().__init__()
         self.forward_speed = forward_speed
         self.turn_speed = turn_speed
         self.direction_change_interval = direction_change_interval
+        self.exploration_range = exploration_range
 
         # Recovery parameters
         self.backup_speed = backup_speed
@@ -230,16 +233,33 @@ class ExploreBehavior(Behavior):
         return Velocity(linear=linear, angular=angular)
 
     def _pick_exploration_direction(self) -> None:
-        """Pick direction toward unexplored areas."""
+        """Pick direction toward unexplored areas, preferring directions close to current heading."""
         if self._memory and self._current_pose:
             unexplored = self._memory.get_unexplored_directions(
                 self._current_pose,
-                check_distance=2.0
+                check_distance=self.exploration_range  # Look further for unexplored territory
             )
             if unexplored:
-                # Strongly prefer unexplored directions
-                direction = random.choice(unexplored)
-                if direction in DIRECTION_ANGLES:
+                # Score each unexplored direction by how close it is to current heading
+                # Lower angle difference = better score
+                scored_directions = []
+                for direction in unexplored:
+                    if direction in DIRECTION_ANGLES:
+                        target_angle = DIRECTION_ANGLES[direction]
+                        # Angle difference from current goal (to maintain momentum)
+                        angle_diff = abs(target_angle - self._goal_direction)
+                        # Normalize to [-pi, pi]
+                        if angle_diff > math.pi:
+                            angle_diff = 2 * math.pi - angle_diff
+                        scored_directions.append((direction, angle_diff))
+
+                if scored_directions:
+                    # Sort by angle difference (prefer directions close to current heading)
+                    scored_directions.sort(key=lambda x: x[1])
+
+                    # Pick from the best candidates (top 3) with some randomness
+                    best_candidates = scored_directions[:min(3, len(scored_directions))]
+                    direction, _ = random.choice(best_candidates)
                     self._goal_direction = DIRECTION_ANGLES[direction]
                     return
 
@@ -293,4 +313,7 @@ class ExploreBehavior(Behavior):
         if self._memory:
             status["cells_explored"] = len(self._memory.visited_cells)
             status["memory_name"] = self._memory_name
+            status["coverage_percent"] = self._memory.get_coverage_percentage()
+            if self._current_pose:
+                status["new_area_confidence"] = self._memory.get_new_area_confidence(self._current_pose)
         return status

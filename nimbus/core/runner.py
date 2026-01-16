@@ -388,6 +388,13 @@ class NimbusRunner:
             return ai_behavior.get_status()
         return None
 
+    def get_explore_status(self) -> Optional[dict]:
+        """Get current systematic exploration status."""
+        explore_behavior = self._behavior_manager.get_behavior("explore")
+        if explore_behavior and isinstance(explore_behavior, ExploreBehavior):
+            return explore_behavior.get_status()
+        return None
+
     def emergency_stop(self) -> None:
         """Trigger emergency stop."""
         self._context.set_state(RobotState.EMERGENCY_STOP)

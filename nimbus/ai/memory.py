@@ -174,6 +174,56 @@ class ExplorationMemory:
 
         return unexplored
 
+    def get_coverage_percentage(self) -> float:
+        """
+        Calculate percentage of bounding box that has been explored.
+
+        Returns 0-100 float. Can decrease as bounding box expands
+        when the robot discovers the environment is larger than
+        initially thought.
+        """
+        if len(self.visited_cells) < 2:
+            return 100.0  # Single cell = 100% of known area
+
+        cells = list(self.visited_cells)
+        min_x = min(c[0] for c in cells)
+        max_x = max(c[0] for c in cells)
+        min_y = min(c[1] for c in cells)
+        max_y = max(c[1] for c in cells)
+
+        bounding_box_cells = (max_x - min_x + 1) * (max_y - min_y + 1)
+        return (len(self.visited_cells) / bounding_box_cells) * 100
+
+    def get_new_area_confidence(self, pose: "Pose2D", search_radius: float = 2.0) -> float:
+        """
+        Calculate confidence that robot is in new/unexplored territory.
+
+        Measures density of unvisited cells in a radius around current position.
+        High percentage = surrounded by unexplored area (new territory).
+        Low percentage = in familiar/revisited area.
+
+        Args:
+            pose: Current robot position
+            search_radius: Radius in meters to check (default 2.0m)
+
+        Returns:
+            0-100 float percentage
+        """
+        robot_cell = self._pose_to_cell(pose.x, pose.y)
+        search_cells = int(search_radius / self.cell_size)
+
+        unvisited = 0
+        total = 0
+
+        for dx in range(-search_cells, search_cells + 1):
+            for dy in range(-search_cells, search_cells + 1):
+                cell = (robot_cell[0] + dx, robot_cell[1] + dy)
+                total += 1
+                if cell not in self.visited_cells:
+                    unvisited += 1
+
+        return (unvisited / total) * 100 if total > 0 else 0.0
+
     def get_explored_summary(self) -> str:
         """Get a summary of explored areas for Ollama context."""
         if not self.visited_cells:

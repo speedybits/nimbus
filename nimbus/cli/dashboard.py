@@ -240,6 +240,16 @@ class LiveDashboard:
         else:
             table.add_row("Safety:", Text("OK", style="green"))
 
+        # Show exploration progress if in explore mode
+        if behavior == "explore":
+            explore_status = self.runner.get_explore_status()
+            if explore_status:
+                pct = explore_status.get("coverage_percent", 0)
+                cells = explore_status.get("cells_explored", 0)
+                new_area = explore_status.get("new_area_confidence", 0)
+                table.add_row("Explored:", f"{pct:.0f}% ({cells} cells)")
+                table.add_row("New Area:", f"{new_area:.0f}%")
+
         self._layout["status"].update(Panel(table, title="Status", border_style="blue"))
 
     def _update_lidar(self, context) -> None:
@@ -250,26 +260,47 @@ class LiveDashboard:
             self._layout["lidar"].update(Panel(error_msg, title="LIDAR View", border_style="red"))
             return
 
-        # ASCII LIDAR visualization
-        viz = self._render_lidar_ascii(sensors.lidar_ranges, sensors.closest_obstacle)
+        # ASCII LIDAR visualization with exploration coloring
+        viz = self._render_lidar_ascii(sensors.lidar_ranges, sensors.closest_obstacle, context)
         self._layout["lidar"].update(Panel(viz, title="LIDAR View", border_style="green"))
 
-    def _render_lidar_ascii(self, ranges: tuple, closest: float) -> str:
-        """
-        Render LIDAR data as ASCII polar plot.
+    def _lidar_to_world(self, index: int, distance: float, pose, deg_per_reading: float) -> tuple:
+        """Convert LIDAR polar reading to world coordinates."""
+        # LIDAR angle in robot frame (0 = front, CCW positive)
+        lidar_angle_rad = math.radians(index * deg_per_reading)
 
-        Uses Unicode block characters for a cleaner look.
+        # Convert to world frame using robot heading
+        world_angle = pose.theta + lidar_angle_rad
+
+        world_x = pose.x + distance * math.cos(world_angle)
+        world_y = pose.y + distance * math.sin(world_angle)
+
+        return world_x, world_y
+
+    def _render_lidar_ascii(self, ranges: tuple, closest: float, context) -> Text:
+        """
+        Render LIDAR data as ASCII polar plot with exploration coloring.
+
+        In explore mode, points in visited cells are colored blue.
         """
         width = 60
         height = 12
         canvas = [[' '] * width for _ in range(height)]
+        canvas_styles = [[None] * width for _ in range(height)]
 
         center_x = width // 2
         center_y = height // 2
 
-        # Draw reference circle
         max_display_range = 2.0  # meters
         scale = min(width // 2 - 2, height - 2) / max_display_range
+
+        # Get exploration memory if in explore mode
+        explore_memory = None
+        pose = context.sensors.pose if context.sensors else None
+        if context.current_behavior == "explore" and pose:
+            behavior = self.runner._behavior_manager.get_behavior("explore")
+            if behavior:
+                explore_memory = behavior.memory
 
         # Plot obstacles
         num_readings = len(ranges)
@@ -294,12 +325,22 @@ class LiveDashboard:
                     else:
                         canvas[y][x] = '.'  # Normal
 
-        # Mark robot position (draw first so obstacles can overwrite if very close)
+                    # Check if this point has been explored
+                    if explore_memory and pose:
+                        world_x, world_y = self._lidar_to_world(
+                            i, distance, pose, degrees_per_reading
+                        )
+                        if explore_memory.is_visited(world_x, world_y):
+                            canvas_styles[y][x] = "blue"
+
+        # Mark robot position
         canvas[center_y][center_x] = 'R'
+        canvas_styles[center_y][center_x] = "green"
 
         # Mark forward direction
         if center_y > 0:
             canvas[center_y - 1][center_x] = '^'
+            canvas_styles[center_y - 1][center_x] = "green"
 
         # Redraw any VERY close obstacles on top of robot marker
         for i in range(num_readings):
@@ -312,12 +353,26 @@ class LiveDashboard:
                 y = int(center_y - r * math.sin(angle_rad))
                 if 0 <= x < width and 0 <= y < height:
                     canvas[y][x] = '#'
+                    # Keep existing style (blue if explored)
 
-        # Build output string with distance info
-        lines = [''.join(row) for row in canvas]
-        lines.append(f"  Closest: {closest:.2f}m  |  Scale: 1 char = {1/scale:.2f}m")
+        # Build Rich Text output with colors
+        lines = []
+        for row, styles in zip(canvas, canvas_styles):
+            line = Text()
+            for char, style in zip(row, styles):
+                line.append(char, style=style)
+            lines.append(line)
 
-        return '\n'.join(lines)
+        lines.append(Text(f"  Closest: {closest:.2f}m  |  Scale: 1 char = {1/scale:.2f}m"))
+
+        # Join lines with newlines
+        result = Text()
+        for i, line in enumerate(lines):
+            result.append_text(line)
+            if i < len(lines) - 1:
+                result.append("\n")
+
+        return result
 
     def _process_keys(self) -> None:
         """Process any pending keypresses."""
