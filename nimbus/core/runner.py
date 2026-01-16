@@ -28,6 +28,7 @@ from nimbus.behaviors.idle import IdleBehavior
 from nimbus.behaviors.wander import WanderBehavior, SimpleWanderBehavior
 from nimbus.behaviors.goto import GoToBehavior, PatrolBehavior
 from nimbus.behaviors.ai_explore import AIExploreBehavior
+from nimbus.behaviors.explore import ExploreBehavior
 
 
 class NimbusRunner:
@@ -99,6 +100,10 @@ class NimbusRunner:
             turn_speed=self.config.navigation.max_angular_speed * 0.6,
         ))
         self._behavior_manager.register(PatrolBehavior())
+        self._behavior_manager.register(ExploreBehavior(
+            forward_speed=self.config.navigation.max_linear_speed * 0.7,
+            turn_speed=self.config.navigation.max_angular_speed * 0.5,
+        ))
         self._behavior_manager.register(AIExploreBehavior())
 
     def _setup_signal_handlers(self) -> None:
@@ -154,8 +159,9 @@ class NimbusRunner:
         self._running = True
         self._shutdown_event.clear()
 
-        # Default to idle behavior
-        self.set_behavior("idle")
+        # Default to idle behavior only if no behavior is already set
+        if not self._behavior_manager.active_behavior:
+            self.set_behavior("idle")
 
     def run(self, on_update: Optional[Callable[[RobotContext], None]] = None) -> None:
         """
@@ -355,6 +361,24 @@ class NimbusRunner:
         if ai_behavior and isinstance(ai_behavior, AIExploreBehavior):
             ai_behavior.set_memory(memory_name)
             return self.set_behavior("ai_explore")
+        return False
+
+    def explore_systematic(self, memory_name: str = "explore") -> bool:
+        """
+        Start systematic exploration (no LLM required).
+
+        Uses heuristics to prefer unexplored directions.
+
+        Args:
+            memory_name: Name of memory to use/create
+
+        Returns:
+            True if exploration started
+        """
+        explore_behavior = self._behavior_manager.get_behavior("explore")
+        if explore_behavior and isinstance(explore_behavior, ExploreBehavior):
+            explore_behavior.set_memory(memory_name)
+            return self.set_behavior("explore")
         return False
 
     def get_exploration_status(self) -> Optional[dict]:
