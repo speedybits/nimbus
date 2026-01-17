@@ -29,6 +29,8 @@ def run(
     dashboard: bool = typer.Option(True, help="Show live dashboard"),
     config: Optional[Path] = typer.Option(None, help="Path to config file"),
     mock: bool = typer.Option(False, "--mock", help="Use mock node (no ROS2)"),
+    direct: bool = typer.Option(False, "--direct", help="Direct mode (no ROS2/Docker required)"),
+    esp32_ip: Optional[str] = typer.Option(None, "--esp32-ip", help="ESP32 IP for direct WiFi mode"),
 ):
     """
     Start Nimbus robot controller.
@@ -36,17 +38,31 @@ def run(
     Examples:
         nimbus run --behavior wander
         nimbus run --behavior idle --no-dashboard
+        nimbus run --direct                           # Direct serial mode
+        nimbus run --direct --esp32-ip 192.168.1.100  # Direct WiFi mode
     """
     from nimbus.core.runner import create_runner
 
     # Banner
+    mode_str = "Direct" if direct else "ROS2"
     console.print(Panel.fit(
-        "[bold blue]Nimbus[/bold blue] Robot Controller",
+        f"[bold blue]Nimbus[/bold blue] Robot Controller [dim]({mode_str} mode)[/dim]",
         subtitle="Press Ctrl+C to stop"
     ))
 
+    if direct:
+        if esp32_ip:
+            console.print(f"[green]Mode:[/green] Direct WiFi (ESP32 at {esp32_ip})")
+        else:
+            console.print("[green]Mode:[/green] Direct Serial")
+
     # Create runner
-    runner = create_runner(config_path=str(config) if config else None, mock=mock)
+    runner = create_runner(
+        config_path=str(config) if config else None,
+        mock=mock,
+        direct=direct,
+        esp32_ip=esp32_ip or ""
+    )
 
     # Set initial behavior
     if behavior != "idle":
@@ -308,6 +324,8 @@ def explore(
     dashboard: bool = typer.Option(True, help="Show live dashboard"),
     config: Optional[Path] = typer.Option(None, help="Path to config file"),
     mock: bool = typer.Option(False, "--mock", help="Use mock node (no ROS2)"),
+    direct: bool = typer.Option(False, "--direct", help="Direct mode (no ROS2/Docker required)"),
+    esp32_ip: Optional[str] = typer.Option(None, "--esp32-ip", help="ESP32 IP for direct WiFi mode"),
 ):
     """
     Start AI-driven exploration with Ollama.
@@ -316,9 +334,10 @@ def explore(
     where to go next based on LIDAR data.
 
     Examples:
-        nimbus explore                      # Use default memory
-        nimbus explore --memory kitchen     # Load/create kitchen memory
-        nimbus explore --new living_room    # Start fresh exploration
+        nimbus explore                              # Use default memory
+        nimbus explore --memory kitchen             # Load/create kitchen memory
+        nimbus explore --new living_room            # Start fresh exploration
+        nimbus explore --direct --esp32-ip 1.2.3.4  # Direct WiFi mode
     """
     from nimbus.core.runner import create_runner
     from nimbus.ai.memory import ExplorationMemory
@@ -329,13 +348,19 @@ def explore(
         console.print(f"[yellow]Starting fresh memory:[/yellow] {memory}")
 
     # Banner
+    mode_str = "Direct" if direct else "ROS2"
     console.print(Panel.fit(
-        "[bold blue]Nimbus AI Explorer[/bold blue]",
+        f"[bold blue]Nimbus AI Explorer[/bold blue] [dim]({mode_str} mode)[/dim]",
         subtitle="Powered by Ollama | Press Ctrl+C to stop"
     ))
 
     # Create runner
-    runner = create_runner(config_path=str(config) if config else None, mock=mock)
+    runner = create_runner(
+        config_path=str(config) if config else None,
+        mock=mock,
+        direct=direct,
+        esp32_ip=esp32_ip or ""
+    )
 
     # Check Ollama availability
     from nimbus.ai.ollama import OllamaClient

@@ -51,26 +51,89 @@ Nimbus follows these core principles:
 └─────────────────┘  └─────────────────┘
          │                    │
 ┌──────────────────────────────────────────────────────────────────┐
-│                       NimbusNode                                  │
-│  Lightweight ROS2 wrapper with topic buffers                      │
+│                     NimbusNode / DirectNode                       │
+│  Unified interface for ROS2 or direct XRCE-DDS communication      │
 └──────────────────────────────────────────────────────────────────┘
          │                    │                    │
     ┌────┴────┐          ┌────┴────┐          ┌────┴────┐
     │  /scan  │          │/odom_raw│          │/cmd_vel │
     └─────────┘          └─────────┘          └─────────┘
          │                    │                    │
-┌──────────────────────────────────────────────────────────────────┐
-│                    Micro-ROS Agent (Docker)                       │
-│  Serial mode: /dev/ttyACM0 @ 115200                               │
-│  WiFi mode: UDP port 8090                                         │
-└──────────────────────────────────────────────────────────────────┘
-                              │
-                    Serial (USB) or WiFi (UDP)
-                              │
+         ├────────────────────┼────────────────────┤
+         │                    │                    │
+    ┌────┴────────────────────┴────────────────────┴────┐
+    │                Connection Layer                     │
+    │  ┌─────────────────┐    ┌─────────────────────┐   │
+    │  │   ROS2 Mode     │    │    Direct Mode      │   │
+    │  │  (NimbusNode)   │    │   (DirectNode)      │   │
+    │  │                 │    │                     │   │
+    │  │ Micro-ROS Agent │    │ Python XRCE-DDS    │   │
+    │  │   (Docker)      │    │  (no Docker/ROS2)  │   │
+    │  └────────┬────────┘    └──────────┬─────────┘   │
+    └───────────┼─────────────────────────┼────────────┘
+                │                         │
+                └───────────┬─────────────┘
+                            │
+                  Serial (USB) or WiFi (UDP)
+                            │
 ┌──────────────────────────────────────────────────────────────────┐
 │                    ESP32 + Physical Robot                         │
-│  Yahboom G1 with Micro-ROS firmware                               │
+│  Yahboom G1 with Micro-ROS client firmware                        │
 └──────────────────────────────────────────────────────────────────┘
+```
+
+## Connection Modes
+
+Nimbus supports two connection modes for communicating with the ESP32:
+
+### ROS2 Mode (Default)
+
+The traditional stack using the Micro-ROS agent:
+
+```
+PC: Nimbus (Python) → ROS2 (rclpy) → Micro-ROS Agent (Docker) → ESP32
+```
+
+**Requirements:**
+- ROS2 Humble installed and sourced
+- Docker for Micro-ROS agent container
+- `nimbus agent start` before running
+
+**Use when:**
+- You need ROS2 ecosystem integration (rviz2, rosbag, etc.)
+- Running alongside other ROS2 nodes
+- Debugging with standard ROS2 tools
+
+### Direct Mode
+
+Pure Python XRCE-DDS implementation that communicates directly with the ESP32:
+
+```
+PC: Nimbus (Python) → XRCE-DDS (Python) → ESP32
+```
+
+**Requirements:**
+- Python 3.10+ only
+- No ROS2 or Docker needed
+
+**Use when:**
+- Simplified deployment without ROS2/Docker
+- Lightweight installations (Raspberry Pi, etc.)
+- Faster startup and lower resource usage
+
+**Enable with:**
+```bash
+nimbus run --direct --esp32-ip 192.168.1.100  # WiFi
+nimbus run --direct                            # Serial
+```
+
+### Architecture Clarification
+
+The Micro-ROS **agent** runs on the **PC** (via Docker), not on the robot. The robot's ESP32 runs the Micro-ROS **client** firmware. The DirectNode implementation replaces the PC-side agent by implementing XRCE-DDS directly in Python.
+
+```
+Before: ESP32 (client) ←→ PC: Docker Agent ←→ PC: ROS2 ←→ PC: Nimbus
+After:  ESP32 (client) ←→ PC: DirectNode (Python XRCE-DDS) ←→ PC: Nimbus
 ```
 
 ## Core Components
@@ -101,6 +164,45 @@ class NimbusNode:
 - Background spinner thread
 - TopicBuffer for thread-safe message access
 - MockNimbusNode for testing without ROS2
+
+### DirectNode (`core/node.py`)
+
+The DirectNode provides the same interface as NimbusNode but communicates directly with the ESP32 using XRCE-DDS protocol, bypassing ROS2 and the Docker-based Micro-ROS agent entirely:
+
+```python
+class DirectNode:
+    """Direct XRCE-DDS communication with ESP32."""
+
+    def start(self) -> None:
+        """Initialize XRCE-DDS session with ESP32."""
+
+    def subscribe(self, topic, msg_type, buffer_size=1) -> TopicBuffer:
+        """Subscribe to topic via XRCE-DDS."""
+
+    def publisher(self, topic, msg_type):
+        """Get or create XRCE-DDS publisher."""
+
+    def shutdown(self) -> None:
+        """Close XRCE-DDS session."""
+```
+
+**Key benefits:**
+- No ROS2 installation required
+- No Docker container needed
+- Pure Python implementation
+- Same API as NimbusNode for seamless switching
+
+### Direct Module (`core/direct/`)
+
+The direct module implements the XRCE-DDS protocol in pure Python:
+
+| File | Purpose |
+|------|---------|
+| `cdr.py` | CDR (Common Data Representation) serialization |
+| `messages.py` | ROS2 message type definitions (LaserScan, Odometry, Twist) |
+| `transport.py` | UDP and Serial transport layers |
+| `client.py` | High-level XRCE-DDS client |
+| `session.py` | Protocol session management |
 
 ### RobotContext (`core/state.py`)
 

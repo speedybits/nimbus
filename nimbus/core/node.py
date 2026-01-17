@@ -294,3 +294,218 @@ class MockPublisher:
     def last_message(self) -> Optional[Any]:
         """Get the last published message."""
         return self.published_messages[-1] if self.published_messages else None
+
+
+class DirectNode:
+    """
+    Direct XRCE-DDS node for ROS2-free communication with ESP32.
+
+    Provides the same interface as NimbusNode but communicates directly
+    with the Yahboom ESP32's Micro-ROS firmware without requiring ROS2
+    or a Micro-ROS agent.
+
+    Usage:
+        node = DirectNode(esp32_ip="192.168.1.100")
+        node.start()
+
+        scan_buffer = node.subscribe("/scan", LaserScan)
+        cmd_pub = node.publisher("/cmd_vel", Twist)
+
+        # Later...
+        latest_scan = scan_buffer.latest()
+        cmd_pub.publish(twist_msg)
+
+        node.shutdown()
+    """
+
+    def __init__(
+        self,
+        name: str = "nimbus_direct",
+        transport: str = "udp",
+        esp32_ip: str = "",
+        port: int = 8090,
+        device: str = "/dev/ttyACM0",
+        baudrate: int = 115200,
+    ):
+        """
+        Initialize the DirectNode.
+
+        Args:
+            name: Node name (for logging)
+            transport: "udp" for WiFi or "serial" for USB
+            esp32_ip: ESP32 IP address (for UDP mode)
+            port: UDP port (default 8090)
+            device: Serial device (for serial mode)
+            baudrate: Serial baud rate
+        """
+        self._name = name
+        self._transport_type = transport
+        self._esp32_ip = esp32_ip
+        self._port = port
+        self._device = device
+        self._baudrate = baudrate
+
+        self._client = None
+        self._buffers: dict[str, TopicBuffer] = {}
+        self._publishers: dict[str, "DirectPublisher"] = {}
+        self._running = False
+
+    def start(self) -> None:
+        """
+        Connect to the ESP32 and start receiving data.
+        """
+        from nimbus.core.direct import XRCEClient, UDPTransport, SerialTransport
+        from nimbus.core.direct.transport import UDPConfig, SerialConfig
+
+        if self._running:
+            return
+
+        # Create transport
+        if self._transport_type == "udp":
+            config = UDPConfig(
+                local_port=self._port,
+                remote_ip=self._esp32_ip,
+                remote_port=self._port
+            )
+            transport = UDPTransport(config)
+        else:
+            config = SerialConfig(
+                device=self._device,
+                baudrate=self._baudrate
+            )
+            transport = SerialTransport(config)
+
+        # Create and start client
+        self._client = XRCEClient(transport)
+        if not self._client.start(timeout=10.0):
+            raise RuntimeError(
+                f"Failed to connect to ESP32 via {self._transport_type}. "
+                f"Check that the robot is powered on and {'connected to WiFi' if self._transport_type == 'udp' else 'connected via USB'}."
+            )
+
+        self._running = True
+
+    def subscribe(
+        self,
+        topic: str,
+        msg_type: type,
+        buffer_size: int = 1,
+        callback: Optional[Callable[[Any], None]] = None
+    ) -> TopicBuffer:
+        """
+        Subscribe to a topic.
+
+        Args:
+            topic: Topic name (e.g., "/scan")
+            msg_type: Message type (ignored for direct mode, auto-detected)
+            buffer_size: Number of messages to buffer
+            callback: Optional callback for each message
+
+        Returns:
+            TopicBuffer for reading messages
+        """
+        if self._client is None:
+            raise RuntimeError("Node not started. Call start() first.")
+
+        buffer = TopicBuffer(capacity=buffer_size)
+        self._buffers[topic] = buffer
+
+        def _buffer_callback(msg):
+            buffer.push(msg)
+            if callback:
+                try:
+                    callback(msg)
+                except Exception:
+                    pass
+
+        self._client.subscribe(topic, _buffer_callback)
+        return buffer
+
+    def publisher(self, topic: str, msg_type: type) -> "DirectPublisher":
+        """
+        Get or create a publisher for a topic.
+
+        Args:
+            topic: Topic name (e.g., "/cmd_vel")
+            msg_type: Message type (ignored for direct mode)
+
+        Returns:
+            DirectPublisher for publishing messages
+        """
+        if self._client is None:
+            raise RuntimeError("Node not started. Call start() first.")
+
+        if topic not in self._publishers:
+            self._publishers[topic] = DirectPublisher(self._client, topic)
+        return self._publishers[topic]
+
+    def get_buffer(self, topic: str) -> Optional[TopicBuffer]:
+        """Get the buffer for a subscribed topic."""
+        return self._buffers.get(topic)
+
+    def shutdown(self) -> None:
+        """
+        Disconnect and cleanup resources.
+        """
+        self._running = False
+
+        if self._client:
+            self._client.stop()
+            self._client = None
+
+    @property
+    def is_running(self) -> bool:
+        """Check if the node is running."""
+        return self._running and self._client is not None and self._client.is_connected
+
+
+class DirectPublisher:
+    """
+    Publisher for DirectNode that wraps XRCE client publishing.
+
+    Provides the same interface as ROS2 publishers.
+    """
+
+    def __init__(self, client, topic: str):
+        self._client = client
+        self._topic = topic
+        self.published_messages: list[Any] = []
+
+    def publish(self, msg: Any) -> None:
+        """
+        Publish a message.
+
+        Args:
+            msg: Message to publish (can be direct message or ROS2 Twist)
+        """
+        from nimbus.core.direct.messages import Twist
+
+        # Convert to direct message format if needed
+        if hasattr(msg, 'linear') and hasattr(msg, 'angular'):
+            # Looks like a Twist message (ROS2 or direct)
+            if not isinstance(msg, Twist):
+                # Convert ROS2 Twist to direct Twist
+                direct_msg = Twist.create(
+                    linear_x=float(msg.linear.x),
+                    angular_z=float(msg.angular.z)
+                )
+                data = direct_msg.serialize()
+            else:
+                data = msg.serialize()
+        elif hasattr(msg, 'serialize'):
+            data = msg.serialize()
+        else:
+            raise ValueError(f"Cannot serialize message type: {type(msg)}")
+
+        self._client.publish(self._topic, data)
+        self.published_messages.append(msg)
+
+    @property
+    def topic(self) -> str:
+        """Get the topic name."""
+        return self._topic
+
+    @property
+    def last_message(self) -> Optional[Any]:
+        """Get the last published message."""
+        return self.published_messages[-1] if self.published_messages else None

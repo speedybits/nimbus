@@ -17,7 +17,7 @@ import threading
 import time
 import numpy as np
 
-from .node import NimbusNode, MockNimbusNode
+from .node import NimbusNode, MockNimbusNode, DirectNode
 from .state import RobotContext, RobotState, Pose2D, Velocity, SensorSnapshot
 from .config import NimbusConfig
 from nimbus.sensors.lidar import LidarProcessor
@@ -55,9 +55,13 @@ class NimbusRunner:
         self,
         config: Optional[NimbusConfig] = None,
         mock: bool = False,  # Use mock node for testing
+        direct: bool = False,  # Use direct XRCE-DDS (no ROS2)
+        esp32_ip: str = "",  # ESP32 IP for direct WiFi mode
     ):
         self.config = config or NimbusConfig.load()
         self._mock = mock
+        self._direct = direct
+        self._esp32_ip = esp32_ip
 
         # Core components
         self._node: Optional[NimbusNode] = None
@@ -118,26 +122,37 @@ class NimbusRunner:
 
     def start(self) -> None:
         """
-        Initialize ROS2 connections and start processing.
+        Initialize connections and start processing.
 
         Call this before run() if you want to do setup before blocking.
         """
         if self._running:
             return
 
-        # Create node
+        # Create node based on mode
         if self._mock:
             self._node = MockNimbusNode("nimbus")
+        elif self._direct:
+            # Direct mode - use XRCE-DDS without ROS2
+            transport = "udp" if self._esp32_ip else "serial"
+            self._node = DirectNode(
+                name="nimbus_direct",
+                transport=transport,
+                esp32_ip=self._esp32_ip,
+                port=self.config.agent.agent_port,
+                device=self.config.agent.device,
+                baudrate=self.config.agent.baudrate,
+            )
         else:
+            # Standard ROS2 mode
             self._node = NimbusNode("nimbus")
 
         self._node.start()
 
         # Subscribe to topics
-        try:
-            from sensor_msgs.msg import LaserScan
-            from nav_msgs.msg import Odometry
-            from geometry_msgs.msg import Twist
+        if self._direct:
+            # Direct mode - use built-in message types
+            from nimbus.core.direct.messages import LaserScan, Odometry, Twist
 
             self._scan_buffer = self._node.subscribe(
                 self.config.sensors.lidar_topic,
@@ -152,11 +167,31 @@ class NimbusRunner:
             )
 
             self._cmd_publisher = self._node.publisher("/cmd_vel", Twist)
+        else:
+            # ROS2 mode
+            try:
+                from sensor_msgs.msg import LaserScan
+                from nav_msgs.msg import Odometry
+                from geometry_msgs.msg import Twist
 
-        except ImportError:
-            # Running without ROS2 - use mock
-            self._scan_buffer = self._node.subscribe("/scan", object, buffer_size=1)
-            self._odom_buffer = self._node.subscribe("/odom_raw", object, buffer_size=1)
+                self._scan_buffer = self._node.subscribe(
+                    self.config.sensors.lidar_topic,
+                    LaserScan,
+                    buffer_size=1
+                )
+
+                self._odom_buffer = self._node.subscribe(
+                    self.config.sensors.odom_topic,
+                    Odometry,
+                    buffer_size=1
+                )
+
+                self._cmd_publisher = self._node.publisher("/cmd_vel", Twist)
+
+            except ImportError:
+                # Running without ROS2 - use mock
+                self._scan_buffer = self._node.subscribe("/scan", object, buffer_size=1)
+                self._odom_buffer = self._node.subscribe("/odom_raw", object, buffer_size=1)
 
         self._running = True
         self._shutdown_event.clear()
@@ -420,7 +455,9 @@ class NimbusRunner:
 
 def create_runner(
     config_path: Optional[str] = None,
-    mock: bool = False
+    mock: bool = False,
+    direct: bool = False,
+    esp32_ip: str = "",
 ) -> NimbusRunner:
     """
     Factory function to create a configured runner.
@@ -428,6 +465,8 @@ def create_runner(
     Args:
         config_path: Optional path to config file
         mock: Use mock node for testing
+        direct: Use direct XRCE-DDS mode (no ROS2 required)
+        esp32_ip: ESP32 IP address for direct WiFi mode
 
     Returns:
         Configured NimbusRunner
@@ -435,4 +474,4 @@ def create_runner(
     from pathlib import Path
 
     config = NimbusConfig.load(Path(config_path) if config_path else None)
-    return NimbusRunner(config=config, mock=mock)
+    return NimbusRunner(config=config, mock=mock, direct=direct, esp32_ip=esp32_ip)

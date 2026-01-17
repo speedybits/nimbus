@@ -62,6 +62,8 @@ nimbus run [OPTIONS]
 | `--dashboard / --no-dashboard` | `--dashboard` | Show live terminal dashboard |
 | `--config PATH` | None | Path to custom config file |
 | `--mock` | False | Use mock node (no ROS2 required) |
+| `--direct` | False | Use direct XRCE-DDS mode (no ROS2/Docker required) |
+| `--esp32-ip TEXT` | None | ESP32 IP address for WiFi direct mode |
 
 ### Examples
 
@@ -80,6 +82,12 @@ nimbus run --mock --behavior wander
 
 # Use custom config
 nimbus run --config /path/to/config.yaml
+
+# Direct mode over WiFi (no ROS2/Docker needed)
+nimbus run --direct --esp32-ip 192.168.1.100 --behavior wander
+
+# Direct mode over serial
+nimbus run --direct --behavior wander
 ```
 
 ### Live Dashboard
@@ -599,6 +607,8 @@ These environment variables affect CLI behavior:
 | `NIMBUS_AGENT_IP` | Agent IP for WiFi mode (default: auto-detect) |
 | `NIMBUS_AGENT_PORT` | UDP port for WiFi mode (default: 8090) |
 | `NIMBUS_ROS_DOMAIN_ID` | ROS2 domain ID (default: 20) |
+| `NIMBUS_DIRECT_MODE` | Enable direct mode by default (default: false) |
+| `NIMBUS_DIRECT_ESP32_IP` | ESP32 IP for direct WiFi mode |
 
 ---
 
@@ -650,3 +660,41 @@ nimbus run --no-dashboard
 ```
 
 Or check terminal size (minimum 80x24 recommended).
+
+### Direct mode: "Connection refused" or timeout
+
+1. Verify ESP32 is powered on and connected to WiFi
+2. Check ESP32 IP address is correct:
+```bash
+# Ping the ESP32
+ping 192.168.1.100
+```
+3. Ensure ESP32 firmware supports XRCE-DDS (Micro-ROS client)
+4. Check firewall isn't blocking UDP port 8090
+
+### Direct mode: "No data received"
+
+The ESP32 may not be publishing topics yet:
+```bash
+# Try with verbose logging
+NIMBUS_LOG_LEVEL=DEBUG nimbus run --direct --esp32-ip 192.168.1.100
+```
+
+Common causes:
+- ESP32 still initializing (wait 5-10 seconds after power-on)
+- Wrong transport mode on ESP32 (should be WiFi/UDP)
+- Network issues between PC and ESP32
+
+### Direct mode: Serial connection issues
+
+```bash
+# Check serial port exists
+ls -la /dev/ttyACM* /dev/ttyUSB*
+
+# Verify permissions
+sudo usermod -aG dialout $USER
+# Log out and back in
+
+# Try explicit port
+NIMBUS_AGENT_DEVICE=/dev/ttyUSB0 nimbus run --direct
+```
