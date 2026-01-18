@@ -1,13 +1,13 @@
 """
-Unit tests for the direct XRCE-DDS module.
+Unit tests for the XRCE-DDS module.
 
 Tests CDR serialization, message parsing, and protocol structures.
 """
 
 import pytest
 import struct
-from nimbus.core.direct.cdr import CDRReader, CDRWriter, parse_encapsulation, add_encapsulation
-from nimbus.core.direct.messages import (
+from nimbus.core.xrce.cdr import CDRReader, CDRWriter, parse_encapsulation, add_encapsulation
+from nimbus.core.xrce.messages import (
     Time, Header, Vector3, Point, Quaternion, Pose,
     Twist, LaserScan, Odometry
 )

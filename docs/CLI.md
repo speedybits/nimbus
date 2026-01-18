@@ -64,6 +64,7 @@ nimbus run [OPTIONS]
 | `--mock` | False | Use mock node (no ROS2 required) |
 | `--direct` | False | Use direct XRCE-DDS mode (no ROS2/Docker required) |
 | `--esp32-ip TEXT` | None | ESP32 IP address for WiFi direct mode |
+| `--discover` | False | Auto-discover ESP32 IP on network (use with `--direct`) |
 
 ### Examples
 
@@ -88,6 +89,9 @@ nimbus run --direct --esp32-ip 192.168.1.100 --behavior wander
 
 # Direct mode over serial
 nimbus run --direct --behavior wander
+
+# Auto-discover ESP32 on the network
+nimbus run --direct --discover --behavior wander
 ```
 
 ### Live Dashboard
@@ -560,6 +564,83 @@ Robot topics detected!
 Testing connection to 192.168.1.100:8090...
 Micro-ROS agent is not running
 Start it with: nimbus agent start --transport wifi
+```
+
+---
+
+### nimbus wifi discover
+
+Scan the local network to find ESP32 robots. This eliminates the need to manually find IP addresses.
+
+```bash
+nimbus wifi discover [OPTIONS]
+```
+
+#### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--timeout, -t FLOAT` | `3.0` | Scan timeout per host in seconds |
+
+#### Examples
+
+```bash
+# Basic discovery
+nimbus wifi discover
+
+# With longer timeout for slower networks
+nimbus wifi discover --timeout 5
+```
+
+#### Output (Single Device Found)
+
+```
+Scanning network 172.20.10.0/28...
+Local IP: 172.20.10.2, Gateway: 172.20.10.1
+
+╭─────────── Discovered Devices ───────────╮
+│ IP Address      │ Latency   │ Status     │
+├─────────────────┼───────────┼────────────┤
+│ 172.20.10.9     │ 14ms      │ Reachable  │
+╰──────────────────────────────────────────╯
+
+Found 1 device. To connect:
+  nimbus run --direct --esp32-ip 172.20.10.9 --behavior wander
+```
+
+#### Output (Multiple Devices Found)
+
+```
+Scanning network 192.168.1.0/24...
+Local IP: 192.168.1.100, Gateway: 192.168.1.1
+
+╭─────────── Discovered Devices ───────────╮
+│ IP Address      │ Latency   │ Status     │
+├─────────────────┼───────────┼────────────┤
+│ 192.168.1.50    │ 8ms       │ Reachable  │
+│ 192.168.1.75    │ 12ms      │ Reachable  │
+│ 192.168.1.120   │ 45ms      │ Reachable  │
+╰──────────────────────────────────────────╯
+
+Found 3 devices. To connect, specify the ESP32 IP:
+  nimbus run --direct --esp32-ip <IP> --behavior wander
+
+Or use auto-discovery:
+  nimbus run --direct --discover --behavior wander
+```
+
+#### Output (No Devices Found)
+
+```
+Scanning network 192.168.1.0/24...
+Local IP: 192.168.1.100, Gateway: 192.168.1.1
+
+No devices found on the network.
+
+Troubleshooting:
+  1. Ensure the robot is powered on
+  2. Check the robot is on the same WiFi network
+  3. Try increasing timeout: nimbus wifi discover --timeout 5
 ```
 
 ---

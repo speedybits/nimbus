@@ -77,6 +77,12 @@ nimbus test --regression
 pytest --cov=nimbus nimbus/tests/
 ```
 
+## Robot Connection
+
+**IMPORTANT:** When the ESP32 is not connecting to the XRCE agent, ALWAYS ask the user to reboot/power cycle the robot. Do not wait or retry silently - immediately ask for a reboot.
+
+**NOTE:** The WiFi is always correctly configured. NEVER suggest re-running WiFi setup - it is not needed.
+
 ## Never Do
 
 - Never store secrets in files - use environment variables

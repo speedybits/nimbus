@@ -69,6 +69,12 @@ def create_app() -> FastAPI:
         ctx = _runner.context
         sensors = ctx.sensors
 
+        # Sanitize obstacle distance for JSON (inf -> None)
+        import math
+        obstacle = sensors.closest_obstacle if sensors else None
+        if obstacle is not None and (math.isinf(obstacle) or math.isnan(obstacle)):
+            obstacle = None
+
         return StatusResponse(
             state=ctx.state.name,
             pose={
@@ -80,7 +86,7 @@ def create_app() -> FastAPI:
                 "linear": sensors.velocity.linear if sensors else 0,
                 "angular": sensors.velocity.angular if sensors else 0,
             },
-            closest_obstacle=sensors.closest_obstacle if sensors else float('inf'),
+            closest_obstacle=obstacle,
             current_behavior=ctx.current_behavior,
             target={
                 "x": ctx.target.x,
@@ -101,6 +107,11 @@ def create_app() -> FastAPI:
         if not sensors:
             raise HTTPException(503, detail="No sensor data available")
 
+        # Sanitize float values for JSON (inf -> None)
+        import math
+        def safe_float(v: float) -> float | None:
+            return None if math.isinf(v) or math.isnan(v) else v
+
         return SensorResponse(
             timestamp=sensors.timestamp.isoformat(),
             pose={
@@ -112,9 +123,9 @@ def create_app() -> FastAPI:
                 "linear": sensors.velocity.linear,
                 "angular": sensors.velocity.angular,
             },
-            closest_obstacle=sensors.closest_obstacle,
+            closest_obstacle=safe_float(sensors.closest_obstacle),
             obstacle_direction=sensors.obstacle_direction,
-            lidar_histogram=list(sensors.lidar_ranges[:72]),  # Downsampled
+            lidar_histogram=[safe_float(r) for r in sensors.lidar_ranges[:72]],
         )
 
     @app.post("/api/navigate")

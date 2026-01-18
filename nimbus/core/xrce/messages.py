@@ -247,7 +247,22 @@ class LaserScan:
 
     @classmethod
     def from_cdr(cls, reader: CDRReader) -> "LaserScan":
-        header = Header.from_cdr(reader)
+        """
+        Deserialize from CDR - ESP32 format.
+
+        The ESP32 Micro-ROS sends a simplified format:
+        - 4 bytes (sequence/padding)
+        - frame_id string (no timestamp!)
+        - angle_min, angle_max, etc.
+        - ranges array
+        - intensities array
+        """
+        # Skip 4 bytes at start (ESP32 format quirk)
+        reader.read_uint32()
+
+        # Read frame_id directly (no Header.stamp in ESP32 format)
+        frame_id = reader.read_string()
+
         angle_min = reader.read_float32()
         angle_max = reader.read_float32()
         angle_increment = reader.read_float32()
@@ -258,7 +273,7 @@ class LaserScan:
         ranges = reader.read_float32_array()
         intensities = reader.read_float32_array()
         return cls(
-            header=header,
+            header=Header(frame_id=frame_id),
             angle_min=angle_min,
             angle_max=angle_max,
             angle_increment=angle_increment,
@@ -314,11 +329,32 @@ class Odometry:
 
     @classmethod
     def from_cdr(cls, reader: CDRReader) -> "Odometry":
+        """
+        Deserialize from CDR - ESP32 format.
+
+        The ESP32 Micro-ROS sends a simplified format:
+        - 4 bytes (sequence/padding)
+        - frame_id string (no timestamp!)
+        - child_frame_id string
+        - PoseWithCovariance
+        - TwistWithCovariance
+        """
+        # Skip 4 bytes at start (ESP32 format quirk)
+        reader.read_uint32()
+
+        # Read frame_id directly (no Header.stamp in ESP32 format)
+        frame_id = reader.read_string()
+
+        # Standard fields
+        child_frame_id = reader.read_string()
+        pose = PoseWithCovariance.from_cdr(reader)
+        twist = TwistWithCovariance.from_cdr(reader)
+
         return cls(
-            header=Header.from_cdr(reader),
-            child_frame_id=reader.read_string(),
-            pose=PoseWithCovariance.from_cdr(reader),
-            twist=TwistWithCovariance.from_cdr(reader)
+            header=Header(frame_id=frame_id),
+            child_frame_id=child_frame_id,
+            pose=pose,
+            twist=twist
         )
 
     def to_cdr(self, writer: CDRWriter) -> None:

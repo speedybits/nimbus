@@ -17,7 +17,7 @@ import threading
 import time
 import numpy as np
 
-from .node import NimbusNode, MockNimbusNode, DirectNode
+from .node import NimbusNode, MockNimbusNode, XRCENode
 from .state import RobotContext, RobotState, Pose2D, Velocity, SensorSnapshot
 from .config import NimbusConfig
 from nimbus.sensors.lidar import LidarProcessor
@@ -55,13 +55,12 @@ class NimbusRunner:
         self,
         config: Optional[NimbusConfig] = None,
         mock: bool = False,  # Use mock node for testing
-        direct: bool = False,  # Use direct XRCE-DDS (no ROS2)
-        esp32_ip: str = "",  # ESP32 IP for direct WiFi mode
+        xrce: bool = False,  # Use pure Python XRCE agent (no ROS2/Docker)
+        direct: bool = False,  # Deprecated alias for xrce
     ):
         self.config = config or NimbusConfig.load()
         self._mock = mock
-        self._direct = direct
-        self._esp32_ip = esp32_ip
+        self._xrce = xrce or direct  # Support both for backwards compatibility
 
         # Core components
         self._node: Optional[NimbusNode] = None
@@ -132,16 +131,11 @@ class NimbusRunner:
         # Create node based on mode
         if self._mock:
             self._node = MockNimbusNode("nimbus")
-        elif self._direct:
-            # Direct mode - use XRCE-DDS without ROS2
-            transport = "udp" if self._esp32_ip else "serial"
-            self._node = DirectNode(
-                name="nimbus_direct",
-                transport=transport,
-                esp32_ip=self._esp32_ip,
+        elif self._xrce:
+            # XRCE mode - use pure Python XRCE agent (no ROS2/Docker)
+            self._node = XRCENode(
+                name="nimbus_xrce",
                 port=self.config.agent.agent_port,
-                device=self.config.agent.device,
-                baudrate=self.config.agent.baudrate,
             )
         else:
             # Standard ROS2 mode
@@ -150,9 +144,9 @@ class NimbusRunner:
         self._node.start()
 
         # Subscribe to topics
-        if self._direct:
-            # Direct mode - use built-in message types
-            from nimbus.core.direct.messages import LaserScan, Odometry, Twist
+        if self._xrce:
+            # XRCE mode - use built-in message types
+            from nimbus.core.xrce.messages import LaserScan, Odometry, Twist
 
             self._scan_buffer = self._node.subscribe(
                 self.config.sensors.lidar_topic,
@@ -456,8 +450,8 @@ class NimbusRunner:
 def create_runner(
     config_path: Optional[str] = None,
     mock: bool = False,
-    direct: bool = False,
-    esp32_ip: str = "",
+    xrce: bool = False,
+    direct: bool = False,  # Deprecated alias for xrce
 ) -> NimbusRunner:
     """
     Factory function to create a configured runner.
@@ -465,8 +459,8 @@ def create_runner(
     Args:
         config_path: Optional path to config file
         mock: Use mock node for testing
-        direct: Use direct XRCE-DDS mode (no ROS2 required)
-        esp32_ip: ESP32 IP address for direct WiFi mode
+        xrce: Use pure Python XRCE agent (no ROS2/Docker required)
+        direct: Deprecated alias for xrce (backwards compatibility)
 
     Returns:
         Configured NimbusRunner
@@ -474,4 +468,4 @@ def create_runner(
     from pathlib import Path
 
     config = NimbusConfig.load(Path(config_path) if config_path else None)
-    return NimbusRunner(config=config, mock=mock, direct=direct, esp32_ip=esp32_ip)
+    return NimbusRunner(config=config, mock=mock, xrce=xrce or direct)
