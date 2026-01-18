@@ -62,9 +62,8 @@ nimbus run [OPTIONS]
 | `--dashboard / --no-dashboard` | `--dashboard` | Show live terminal dashboard |
 | `--config PATH` | None | Path to custom config file |
 | `--mock` | False | Use mock node (no ROS2 required) |
-| `--direct` | False | Use direct XRCE-DDS mode (no ROS2/Docker required) |
-| `--esp32-ip TEXT` | None | ESP32 IP address for WiFi direct mode |
-| `--discover` | False | Auto-discover ESP32 IP on network (use with `--direct`) |
+| `--xrce` | False | Use pure Python XRCE mode (no ROS2/Docker required) |
+| `--discover` | False | Auto-discover ESP32 IP on network (use with `--xrce`) |
 
 ### Examples
 
@@ -84,14 +83,11 @@ nimbus run --mock --behavior wander
 # Use custom config
 nimbus run --config /path/to/config.yaml
 
-# Direct mode over WiFi (no ROS2/Docker needed)
-nimbus run --direct --esp32-ip 192.168.1.100 --behavior wander
+# XRCE mode (no ROS2/Docker needed)
+nimbus run --xrce --behavior wander
 
-# Direct mode over serial
-nimbus run --direct --behavior wander
-
-# Auto-discover ESP32 on the network
-nimbus run --direct --discover --behavior wander
+# XRCE mode with auto-discover
+nimbus run --xrce --discover --behavior wander
 ```
 
 ### Live Dashboard
@@ -605,7 +601,7 @@ Local IP: 172.20.10.2, Gateway: 172.20.10.1
 ╰──────────────────────────────────────────╯
 
 Found 1 device. To connect:
-  nimbus run --direct --esp32-ip 172.20.10.9 --behavior wander
+  nimbus run --xrce --behavior wander
 ```
 
 #### Output (Multiple Devices Found)
@@ -622,11 +618,11 @@ Local IP: 192.168.1.100, Gateway: 192.168.1.1
 │ 192.168.1.120   │ 45ms      │ Reachable  │
 ╰──────────────────────────────────────────╯
 
-Found 3 devices. To connect, specify the ESP32 IP:
-  nimbus run --direct --esp32-ip <IP> --behavior wander
+Found 3 devices. To connect:
+  nimbus run --xrce --behavior wander
 
 Or use auto-discovery:
-  nimbus run --direct --discover --behavior wander
+  nimbus run --xrce --discover --behavior wander
 ```
 
 #### Output (No Devices Found)
@@ -688,8 +684,7 @@ These environment variables affect CLI behavior:
 | `NIMBUS_AGENT_IP` | Agent IP for WiFi mode (default: auto-detect) |
 | `NIMBUS_AGENT_PORT` | UDP port for WiFi mode (default: 8090) |
 | `NIMBUS_ROS_DOMAIN_ID` | ROS2 domain ID (default: 20) |
-| `NIMBUS_DIRECT_MODE` | Enable direct mode by default (default: false) |
-| `NIMBUS_DIRECT_ESP32_IP` | ESP32 IP for direct WiFi mode |
+| `NIMBUS_XRCE_MODE` | Enable XRCE mode by default (default: false) |
 
 ---
 
@@ -758,7 +753,7 @@ ping 192.168.1.100
 The ESP32 may not be publishing topics yet:
 ```bash
 # Try with verbose logging
-NIMBUS_LOG_LEVEL=DEBUG nimbus run --direct --esp32-ip 192.168.1.100
+NIMBUS_LOG_LEVEL=DEBUG nimbus run --xrce 192.168.1.100
 ```
 
 Common causes:
@@ -777,5 +772,5 @@ sudo usermod -aG dialout $USER
 # Log out and back in
 
 # Try explicit port
-NIMBUS_AGENT_DEVICE=/dev/ttyUSB0 nimbus run --direct
+NIMBUS_AGENT_DEVICE=/dev/ttyUSB0 nimbus run --xrce
 ```

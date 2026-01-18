@@ -51,7 +51,7 @@ nimbus/
 │   ├── __init__.py           # Package version
 │   ├── __main__.py           # python -m nimbus entry
 │   ├── core/                 # Core infrastructure
-│   │   ├── node.py           # ROS2 wrapper + DirectNode
+│   │   ├── node.py           # ROS2 wrapper + XRCENode
 │   │   ├── state.py          # State machine, data classes
 │   │   ├── config.py         # Configuration system
 │   │   ├── runner.py         # Main control loop
@@ -477,16 +477,16 @@ Test direct XRCE-DDS communication without ROS2/Docker:
 
 ```bash
 # Direct mode with mock (no hardware needed)
-nimbus run --mock --direct --behavior wander
+nimbus run --mock --xrce --behavior wander
 
 # Direct mode over WiFi
-nimbus run --direct --esp32-ip 192.168.1.100 --behavior wander
+nimbus run --xrce 192.168.1.100 --behavior wander
 
 # Direct mode over serial
-nimbus run --direct --behavior wander
+nimbus run --xrce --behavior wander
 
 # With debug logging
-NIMBUS_LOG_LEVEL=DEBUG nimbus run --direct --esp32-ip 192.168.1.100
+NIMBUS_LOG_LEVEL=DEBUG nimbus run --xrce 192.168.1.100
 ```
 
 ### API Debugging
@@ -619,7 +619,7 @@ nc -vzu 192.168.1.100 8090
 ls -la /dev/ttyACM* /dev/ttyUSB*
 
 # Run with verbose logging to see XRCE-DDS traffic
-NIMBUS_LOG_LEVEL=DEBUG nimbus run --direct --esp32-ip 192.168.1.100
+NIMBUS_LOG_LEVEL=DEBUG nimbus run --xrce 192.168.1.100
 ```
 
 Common direct mode issues:

@@ -29,14 +29,14 @@ nimbus run --mock --behavior wander
 
 ### Connecting to the Robot
 
-**Option 1: Direct Mode (Recommended)** — No ROS2 or Docker required!
+**Option 1: XRCE Mode (Recommended)** — No ROS2 or Docker required!
 
 ```bash
-# WiFi: Direct connection to ESP32
-nimbus run --direct --esp32-ip 192.168.1.100 --behavior wander
+# WiFi: Pure Python XRCE connection to ESP32
+nimbus run --xrce --behavior wander
 
-# USB: Direct serial connection
-nimbus run --direct --behavior wander
+# With auto-discovery
+nimbus run --xrce --discover --behavior wander
 ```
 
 **Option 2: ROS2 Mode** — Traditional ROS2 stack with Micro-ROS agent
@@ -49,12 +49,12 @@ nimbus connect
 nimbus run --behavior wander
 ```
 
-> **Note**: If you've already run `nimbus connect`, use ROS2 mode (without `--direct`).
-> Direct mode and the Micro-ROS agent both use UDP port 8090 and cannot run simultaneously.
+> **Note**: If you've already run `nimbus connect`, use ROS2 mode (without `--xrce`).
+> XRCE mode and the Micro-ROS agent both use UDP port 8090 and cannot run simultaneously.
 
 ## Requirements
 
-**Minimum (Direct Mode):**
+**Minimum (XRCE Mode):**
 - Python 3.10+
 
 **Full (ROS2 Mode):**
@@ -92,14 +92,14 @@ nimbus run --behavior wander
                               │
 ┌─────────────────────────────────────────────────────────────┐
 │                    Core Layer                               │
-│           NimbusNode │ DirectNode │ State Machine           │
+│           NimbusNode │ XRCENode │ State Machine             │
 └─────────────────────────────────────────────────────────────┘
                  │                        │
     ┌────────────┴────────────┐           │
-    │  ROS2 Mode (--no-direct)│           │  Direct Mode (--direct)
+    │     ROS2 Mode           │           │  XRCE Mode (--xrce)
     │                         │           │
 ┌───────────────────┐         │    ┌──────────────────────┐
-│ Micro-ROS Agent   │         │    │ XRCE-DDS Client      │
+│ Micro-ROS Agent   │         │    │ XRCEAgent            │
 │ (Docker)          │         │    │ (Pure Python)        │
 │  /scan /odom_raw  │         │    │  No ROS2 required    │
 └───────────────────┘         │    └──────────────────────┘
@@ -117,8 +117,8 @@ nimbus run --behavior wander
 | Command | Description |
 |---------|-------------|
 | `nimbus run` | Start robot controller with live dashboard |
-| `nimbus run --direct` | Start in direct mode (no ROS2 required) |
-| `nimbus run --direct --esp32-ip IP` | Direct mode over WiFi |
+| `nimbus run --xrce` | Start in XRCE mode (no ROS2 required) |
+| `nimbus run --xrce --discover` | XRCE mode with auto-discovery |
 | `nimbus connect` | Connect robot via ROS2/Micro-ROS agent |
 | `nimbus status` | Show current robot state |
 | `nimbus stop` | Emergency stop |
@@ -128,6 +128,7 @@ nimbus run --behavior wander
 | `nimbus explore` | Start AI-driven exploration |
 | `nimbus agent start\|stop\|status` | Manage Micro-ROS agent |
 | `nimbus wifi setup` | Configure robot WiFi |
+| `nimbus wifi discover` | Find ESP32 on network |
 | `nimbus test` | Run test suite |
 | `nimbus version` | Show version |
 
@@ -159,19 +160,19 @@ Nimbus supports two ways to communicate with the ESP32 robot:
 
 | Mode | Command | Requirements | Use Case |
 |------|---------|--------------|----------|
-| **Direct** | `nimbus run --direct` | Python only | Simple setup, no Docker/ROS2 |
+| **XRCE** | `nimbus run --xrce` | Python only | Simple setup, no Docker/ROS2 |
 | **ROS2** | `nimbus run` | ROS2 + Docker | Integration with ROS2 ecosystem |
 
-### Direct Mode
+### XRCE Mode
 
-Direct mode implements the XRCE-DDS protocol in pure Python, communicating directly with the ESP32's Micro-ROS firmware. No ROS2 installation or Docker required.
+XRCE mode implements the XRCE-DDS protocol in pure Python, communicating directly with the ESP32's Micro-ROS firmware. No ROS2 installation or Docker required.
 
 ```bash
 # WiFi (recommended for untethered operation)
-nimbus run --direct --esp32-ip 192.168.1.100 --behavior wander
+nimbus run --xrce --behavior wander
 
-# Serial/USB (for development)
-nimbus run --direct --behavior wander
+# With auto-discovery
+nimbus run --xrce --discover --behavior wander
 ```
 
 ### ROS2 Mode
@@ -186,7 +187,7 @@ nimbus connect
 nimbus run --behavior wander
 ```
 
-> **Important**: Direct mode and ROS2 mode cannot run simultaneously — they both use UDP port 8090. If the Micro-ROS agent is running, use ROS2 mode.
+> **Important**: XRCE mode and ROS2 mode cannot run simultaneously — they both use UDP port 8090. If the Micro-ROS agent is running, use ROS2 mode.
 
 ## Configuration
 
@@ -209,11 +210,10 @@ api:
   rest_port: 8080
   websocket_enabled: true
 
-# Direct mode settings
-direct:
-  enabled: false          # Set true to use direct mode by default
-  esp32_ip: ""            # ESP32 IP for WiFi (empty = serial mode)
-  transport: "serial"     # "serial" or "udp"
+# XRCE mode settings
+xrce:
+  enabled: false          # Set true to use XRCE mode by default
+  bind_port: 8090         # UDP port for ESP32 communication
 ```
 
 Environment variables (override config):
@@ -222,9 +222,8 @@ export NIMBUS_MAX_SPEED=0.25
 export NIMBUS_API_PORT=9000
 export NIMBUS_SAFETY_RADIUS=0.35
 
-# Direct mode
-export NIMBUS_DIRECT_MODE=true
-export NIMBUS_DIRECT_ESP32_IP=192.168.1.100
+# XRCE mode
+export NIMBUS_XRCE_MODE=true
 ```
 
 ## Behaviors
