@@ -53,12 +53,14 @@ from .protocol import (
     MessageHeader, SubmessageHeader, ObjectId,
     parse_message, ParsedSubmessage,
     build_status_agent, build_timestamp_reply, build_status_ok, build_acknack, build_data,
+    build_heartbeat_probe,
 )
 from .session import SessionManager
 from .entities import EntityManager, normalize_topic_name
 from .transport import UDPTransport, UDPConfig
 from .messages import LaserScan, Odometry, Twist, MESSAGE_TYPES
 from .logger import xrce_log
+from .assertions import assert_comm
 
 
 @dataclass
@@ -98,6 +100,15 @@ class XRCEAgent:
     RECEIVE_TIMEOUT = 0.1       # Receive poll interval
     POLL_INTERVAL = 0.001       # Background thread poll interval
 
+    # Silence detection (graduated response)
+    SILENCE_WARNING_TIMEOUT = 2.0    # Seconds before warning
+    SILENCE_STALE_TIMEOUT = 3.0      # Seconds before "stale" state
+    SILENCE_DISCONNECT_TIMEOUT = 5.0 # Seconds before disconnect
+
+    # Active keepalive probing
+    PROBE_INTERVAL = 2.0        # Send probe every 2s when idle
+    MAX_PROBE_FAILURES = 3      # Disconnect after 3 failed probes
+
     def __init__(self, bind_port: int = 8888):
         """
         Initialize the XRCE agent.
@@ -125,6 +136,18 @@ class XRCEAgent:
         # Fragment reassembly buffer
         self._fragment_buffer: bytes = b''
         self._fragment_count: int = 0
+        self._fragment_start_time: float = 0.0
+
+        # Heartbeat monitoring
+        self._last_message_time: float = 0.0
+
+        # Active keepalive probing state
+        self._last_probe_time: float = 0.0
+        self._probe_failures: int = 0
+
+        # Duplicate CREATE_CLIENT detection
+        self._last_create_client_time: float = 0.0
+        self._last_create_client_key: Optional[bytes] = None
 
     def start(self) -> bool:
         """
@@ -190,7 +213,7 @@ class XRCEAgent:
             # Get message type
             msg_type = MESSAGE_TYPES.get(topic) or MESSAGE_TYPES.get(normalized)
             if not msg_type:
-                print(f"Unknown topic type: {topic}")
+                xrce_log(f"[yellow]Unknown topic type: {topic}[/yellow]")
                 return False
 
             self._subscriptions[normalized] = SubscriptionInfo(
@@ -217,13 +240,18 @@ class XRCEAgent:
 
         with self._lock:
             if not self._client_addr:
-                return False  # No ESP32 connected
+                assert_comm(
+                    "PUB1", False,
+                    f"Cannot publish {normalized}: ESP32 not connected",
+                    "yellow", 5.0
+                )
+                return False
 
             # Setup publisher tracking
             if normalized not in self._publishers:
                 msg_type = MESSAGE_TYPES.get(topic) or MESSAGE_TYPES.get(normalized)
                 if not msg_type:
-                    print(f"Unknown topic type: {topic}")
+                    xrce_log(f"[yellow]Unknown topic type: {topic}[/yellow]")
                     return False
                 self._publishers[normalized] = PublisherInfo(
                     topic=normalized,
@@ -234,6 +262,13 @@ class XRCEAgent:
             dr_id = self._entities.get_datareader_for_topic(normalized)
             if dr_id is None:
                 # ESP32 hasn't created a datareader for this topic yet
+                subscribed = self._entities.get_subscribed_topics()
+                assert_comm(
+                    "PUB2", False,
+                    f"ESP32 not subscribed to {normalized}",
+                    "red", 5.0,
+                    xrce_detail=f"ESP32 subscribed topics: {subscribed}"
+                )
                 return False
 
             # Build and send DATA message
@@ -243,6 +278,13 @@ class XRCEAgent:
 
             if success:
                 self._publishers[normalized].message_count += 1
+                xrce_log(f"[green]Published to {normalized}: {len(data)} bytes[/green]")
+            else:
+                assert_comm(
+                    "PUB3", False,
+                    f"Send failed for {normalized}",
+                    "red", 5.0
+                )
 
             return success
 
@@ -279,6 +321,12 @@ class XRCEAgent:
             if self.is_connected:
                 return True
             time.sleep(0.1)
+        # Fire assertion on timeout
+        assert_comm(
+            "S1", False,
+            "ESP32 not responding. Please power cycle the robot.",
+            "bold red", 30.0
+        )
         return False
 
     @property
@@ -337,17 +385,52 @@ class XRCEAgent:
                 result = self._transport.receive(timeout=self.RECEIVE_TIMEOUT)
                 if result:
                     data, addr = result
+                    self._last_message_time = time.time()
+                    self._probe_failures = 0  # Reset on successful receive
                     xrce_log(f"Received {len(data)} bytes from {addr}")
                     self._client_addr = addr
                     self._process_message(data)
+                elif self._session.is_connected and self._last_message_time > 0:
+                    # Graduated silence detection
+                    now = time.time()
+                    silence = now - self._last_message_time
+
+                    if silence > self.SILENCE_DISCONNECT_TIMEOUT:
+                        assert_comm(
+                            "S3", False,
+                            "Lost connection to ESP32",
+                            "bold red", 10.0
+                        )
+                    elif silence > self.SILENCE_STALE_TIMEOUT:
+                        assert_comm(
+                            "S4", False,
+                            f"ESP32 silent for {silence:.1f}s",
+                            "yellow", 2.0
+                        )
+                    elif silence > self.SILENCE_WARNING_TIMEOUT:
+                        assert_comm(
+                            "S4", False,
+                            f"ESP32 silent for {silence:.1f}s",
+                            "yellow", 2.0
+                        )
+
+                    # Active keepalive probing when connected but idle
+                    if self._client_addr and now - self._last_probe_time > self.PROBE_INTERVAL:
+                        self._send_keepalive_probe()
+                        self._last_probe_time = now
+
             except Exception as e:
                 if self._running:
-                    print(f"Receive error: {e}")
+                    assert_comm("T2", False, f"Receive loop error: {e}", "yellow", 5.0)
 
             time.sleep(self.POLL_INTERVAL)
 
     def _process_message(self, data: bytes) -> None:
         """Process a received XRCE message."""
+        if len(data) < 4:
+            assert_comm("P1", False, f"Malformed packet: {len(data)} bytes", "yellow", 5.0)
+            return
+
         parsed = parse_message(data)
         if not parsed:
             return
@@ -359,7 +442,11 @@ class XRCEAgent:
             try:
                 self._handle_submessage(submsg, seq_num)
             except Exception as e:
-                print(f"Error handling submessage {submsg.submessage_id}: {e}")
+                assert_comm(
+                    "P3", False,
+                    f"Error handling {submsg.submessage_id.name}: {e}",
+                    "yellow", 5.0
+                )
 
         # Send ACKNACK for reliable stream messages (stream >= 0x80)
         if stream_id >= 0x80:
@@ -405,16 +492,47 @@ class XRCEAgent:
         Handle CREATE_CLIENT from ESP32.
 
         Responds with STATUS_AGENT to acknowledge the client.
+        Handles reconnection by clearing stale state.
+        Ignores duplicate CREATE_CLIENT packets (ESP32 retransmits).
         """
         if len(submsg.payload) < 4:
             return
 
         client_key = submsg.payload[:4]
+        now = time.time()
+
+        # Detect duplicate CREATE_CLIENT (ESP32 retransmits within ~100ms)
+        if (self._last_create_client_key == client_key and
+            now - self._last_create_client_time < 0.5):
+            # Duplicate - just resend STATUS_AGENT, don't reset state
+            xrce_log("[dim]Duplicate CREATE_CLIENT, resending STATUS_AGENT[/dim]")
+            msg = build_status_agent(client_key)
+            self._transport.send(msg, self._client_addr, max_time=0.5)
+            return
+
+        self._last_create_client_time = now
+        self._last_create_client_key = client_key
+
+        was_connected = self._session.is_connected
+        old_key = self._session.client_key
+
+        # Handle reconnection - clear stale state only for genuine reconnects
+        if was_connected:
+            if old_key != client_key:
+                assert_comm("S2", True, "ESP32 reconnected (new session)", "green", 5.0)
+            else:
+                assert_comm("S6", True, "ESP32 reconnected (same session)", "cyan", 5.0)
+            self._soft_reset()
+
         self._session.handle_create_client(client_key)
 
-        # Send STATUS_AGENT response
+        # Reset probe timer to prevent probing during handshake
+        self._last_probe_time = time.time()
+
+        # Send STATUS_AGENT response with retry
         msg = build_status_agent(client_key)
-        self._transport.send(msg, self._client_addr)
+        success = self._transport.send(msg, self._client_addr, max_time=0.5)
+        xrce_log(f"[green]STATUS_AGENT sent (success={success})[/green]")
 
     def _handle_timestamp(self, submsg: ParsedSubmessage) -> None:
         """
@@ -429,7 +547,8 @@ class XRCEAgent:
         now_ns = int(time.time() * 1_000_000_000)
 
         msg = build_timestamp_reply(transmit_ts, now_ns)
-        self._transport.send(msg, self._client_addr)
+        success = self._transport.send(msg, self._client_addr)
+        xrce_log(f"[green]TIMESTAMP_REPLY sent (success={success})[/green]")
 
     def _handle_create(self, submsg: ParsedSubmessage) -> None:
         """
@@ -454,10 +573,18 @@ class XRCEAgent:
         # Track the entity
         self._entities.handle_create(raw_obj_id, obj_kind, submsg.payload)
 
+        # Log entity creation
+        xrce_log(f"[cyan]CREATE {obj_kind.name} id={raw_obj_id}[/cyan]")
+        if obj_kind == ObjectKind.DATAREADER:
+            topics = self._entities.get_subscribed_topics()
+            xrce_log(f"[cyan]  ESP32 now subscribes to: {topics}[/cyan]")
+
         # Send STATUS OK
         seq = self._session.next_sequence()
         msg = build_status_ok(raw_obj_id, request_id, seq)
-        self._transport.send(msg, self._client_addr)
+        success = self._transport.send(msg, self._client_addr)
+        xrce_log(f"[cyan]  -> STATUS OK sent (obj={raw_obj_id}, req={request_id}, seq={seq}, success={success})[/cyan]")
+        xrce_log(f"[dim]     hex: {msg.hex()}[/dim]")
 
     def _handle_write_data(self, submsg: ParsedSubmessage) -> None:
         """
@@ -484,7 +611,11 @@ class XRCEAgent:
         # Detect topic from payload content
         topic = self._detect_topic_from_payload(submsg.payload)
         if not topic:
-            xrce_log(f"[yellow]Topic detection failed for {len(submsg.payload)} byte payload[/yellow]")
+            assert_comm(
+                "D1", False,
+                f"Unknown message type ({len(submsg.payload)} bytes)",
+                "yellow", 5.0
+            )
             return
         xrce_log(f"Detected topic: [cyan]{topic}[/cyan]")
 
@@ -505,7 +636,12 @@ class XRCEAgent:
                 xrce_log(f"[green]{topic}[/green]: msg #{sub.message_count}, ranges={len(msg.ranges) if hasattr(msg, 'ranges') else 'N/A'}")
                 callback = sub.callback
             except Exception as e:
-                xrce_log(f"[red]Deserialization error for {topic}: {e}[/red]")
+                assert_comm(
+                    "D2", False,
+                    f"Failed to parse {topic}: {e}",
+                    "red", 5.0,
+                    xrce_detail=f"CDR data: {len(cdr_data)} bytes"
+                )
                 return
 
         # Call callback outside lock
@@ -599,6 +735,26 @@ class XRCEAgent:
         if len(payload) < 8:
             return
 
+        # Check for fragment timeout (stale buffer)
+        if self._fragment_buffer and self._fragment_start_time > 0:
+            if time.time() - self._fragment_start_time > 3.0:  # Extended for WiFi jitter
+                assert_comm(
+                    "F1", False,
+                    "Fragment timeout: discarding incomplete data",
+                    "yellow", 5.0,
+                    xrce_detail=f"Buffer: {len(self._fragment_buffer)} bytes, {self._fragment_count} fragments"
+                )
+                self._fragment_buffer = b''
+                self._fragment_count = 0
+                self._fragment_start_time = 0.0
+
+        # Check for fragment buffer overflow
+        if len(self._fragment_buffer) > 65536:
+            assert_comm("F2", False, "Fragment overflow: discarding", "red", 5.0)
+            self._fragment_buffer = b''
+            self._fragment_count = 0
+            self._fragment_start_time = 0.0
+
         # Check if this is a first fragment (starts with WRITE_DATA indicator 0x07)
         is_first = payload[0] == 0x07
 
@@ -611,6 +767,7 @@ class XRCEAgent:
             # The actual CDR data starts after: submsg_id(1) + flags(1) + stream(2) + seq(2) + more(6)
             self._fragment_buffer = payload[12:]  # Skip fragment header
             self._fragment_count = 1
+            self._fragment_start_time = time.time()
         else:
             # Continuation fragment - append entire payload
             self._fragment_buffer += payload
@@ -631,6 +788,7 @@ class XRCEAgent:
         cdr_data = self._fragment_buffer
         self._fragment_buffer = b''
         self._fragment_count = 0
+        self._fragment_start_time = 0.0
 
         # Check if we have a /scan subscription
         with self._lock:
@@ -660,7 +818,36 @@ class XRCEAgent:
     def _send_acknack(self, seq_num: int) -> None:
         """Send ACKNACK to acknowledge received messages."""
         msg = build_acknack(seq_num + 1)
-        self._transport.send(msg, self._client_addr)
+        success = self._transport.send(msg, self._client_addr)
+        xrce_log(f"[dim]ACKNACK sent (next_seq={seq_num + 1}, success={success})[/dim]")
+
+    def _send_keepalive_probe(self) -> None:
+        """Send HEARTBEAT probe to verify ESP32 connectivity."""
+        if not self._client_addr:
+            return
+        seq = self._session.next_sequence()
+        msg = build_heartbeat_probe(seq)
+        success = self._transport.send(msg, self._client_addr)
+        xrce_log(f"[yellow]KEEPALIVE probe sent (seq={seq}, success={success})[/yellow]")
+        if not success:
+            self._probe_failures += 1
+            if self._probe_failures >= self.MAX_PROBE_FAILURES:
+                assert_comm(
+                    "S5", False,
+                    "ESP32 not reachable (probe failed)",
+                    "red", 5.0
+                )
+
+    def _soft_reset(self) -> None:
+        """Reset state without stopping agent - for reconnection."""
+        self._entities.clear()
+        self._fragment_buffer = b''
+        self._fragment_count = 0
+        self._fragment_start_time = 0.0
+        self._probe_failures = 0
+        self._last_create_client_time = 0.0
+        self._last_create_client_key = None
+        self._session.reset()
 
 
 # =============================================================================

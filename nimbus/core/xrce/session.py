@@ -136,6 +136,11 @@ class SessionManager:
         """Check if a client is connected."""
         return self._session.is_connected
 
+    @property
+    def client_key(self) -> Optional[bytes]:
+        """Get the current client key."""
+        return self._session.client_key
+
     def handle_create_client(self, client_key: bytes) -> None:
         """
         Handle CREATE_CLIENT from ESP32.

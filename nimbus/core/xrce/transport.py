@@ -12,6 +12,8 @@ import threading
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+from .assertions import assert_comm
+
 
 @dataclass
 class UDPConfig:
@@ -62,7 +64,7 @@ class UDPTransport:
             self._socket.setblocking(False)
             return True
         except Exception as e:
-            print(f"UDP transport bind failed: {e}")
+            assert_comm("T1", False, f"Cannot bind UDP port {self.config.bind_port}: {e}", "bold red", 60.0)
             return False
 
     def close(self) -> None:
@@ -104,35 +106,63 @@ class UDPTransport:
             except BlockingIOError:
                 return None
             except Exception as e:
-                print(f"UDP receive failed: {e}")
+                assert_comm("T2", False, f"UDP receive error: {e}", "yellow", 5.0)
                 return None
 
-    def send(self, data: bytes, addr: Optional[Tuple[str, int]] = None) -> bool:
+    def send(self, data: bytes, addr: Optional[Tuple[str, int]] = None,
+             retries: int = 0, max_time: float = 1.0,
+             base_delay: float = 0.01, max_delay: float = 0.2) -> bool:
         """
-        Send data to ESP32.
+        Send data to ESP32 with exponential backoff retry.
+
+        Retries continuously with exponential backoff until max_time is reached.
 
         Args:
             data: Bytes to send
             addr: Optional target address; uses learned client address if not provided
+            retries: Deprecated, ignored (kept for compatibility)
+            max_time: Maximum total time to spend retrying (default 1.0s)
+            base_delay: Initial delay between retries (default 10ms)
+            max_delay: Maximum delay between retries (default 200ms)
 
         Returns:
             True if send succeeded
         """
+        import time as _time
+
         with self._lock:
             if not self._socket:
                 return False
 
-            # Use provided address or learned client address
             target = addr or self._client_addr
             if not target:
                 return False
 
-            try:
-                self._socket.sendto(data, target)
-                return True
-            except Exception as e:
-                print(f"UDP send failed: {e}")
-                return False
+            start_time = _time.time()
+            attempt = 0
+            delay = base_delay
+            last_error = None
+
+            while True:
+                try:
+                    self._socket.sendto(data, target)
+                    return True
+                except Exception as e:
+                    last_error = e
+                    attempt += 1
+                    elapsed = _time.time() - start_time
+
+                    if elapsed >= max_time:
+                        assert_comm(
+                            "T3", False,
+                            f"Send failed after {attempt} attempts ({elapsed:.2f}s): {e}",
+                            "red", 5.0
+                        )
+                        return False
+
+                    # Exponential backoff with cap
+                    _time.sleep(delay)
+                    delay = min(delay * 2, max_delay)
 
     @property
     def is_open(self) -> bool:

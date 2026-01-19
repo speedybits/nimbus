@@ -410,3 +410,35 @@ def build_data(object_id: int, cdr_data: bytes, seq_num: int) -> bytes:
         sequence_nr=seq_num
     )
     return header.pack() + submsg.pack() + payload
+
+
+def build_heartbeat_probe(seq_num: int) -> bytes:
+    """
+    Build HEARTBEAT message for keepalive probing.
+
+    Sends a minimal HEARTBEAT to verify bidirectional connectivity
+    with the ESP32. The ESP32 should respond, resetting the silence timer.
+
+    Args:
+        seq_num: Sequence number for the message
+
+    Returns:
+        Complete XRCE message bytes
+    """
+    # HEARTBEAT payload format (4 bytes):
+    # - first_seq (2 bytes): first unacknowledged sequence
+    # - last_seq (2 bytes): last sent sequence
+    payload = struct.pack('<HH', 0, seq_num)
+
+    submsg = SubmessageHeader(
+        SubmessageId.HEARTBEAT,
+        FLAG_LITTLE_ENDIAN,
+        len(payload)
+    )
+
+    header = MessageHeader(
+        session_id=0x81,
+        stream_id=StreamId.NONE,
+        sequence_nr=seq_num
+    )
+    return header.pack() + submsg.pack() + payload
