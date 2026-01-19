@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from .assertions import assert_comm
+from .logger import LogLevel
 
 
 @dataclass
@@ -64,7 +65,7 @@ class UDPTransport:
             self._socket.setblocking(False)
             return True
         except Exception as e:
-            assert_comm("T1", False, f"Cannot bind UDP port {self.config.bind_port}: {e}", "bold red", 60.0)
+            assert_comm("T1", False, f"Cannot bind UDP port {self.config.bind_port}: {e}", "bold red", 60.0, level=LogLevel.CRITICAL)
             return False
 
     def close(self) -> None:
@@ -106,7 +107,7 @@ class UDPTransport:
             except BlockingIOError:
                 return None
             except Exception as e:
-                assert_comm("T2", False, f"UDP receive error: {e}", "yellow", 5.0)
+                assert_comm("T2", False, f"UDP receive error: {e}", "yellow", 5.0, level=LogLevel.DEBUG)
                 return None
 
     def send(self, data: bytes, addr: Optional[Tuple[str, int]] = None,
@@ -156,7 +157,8 @@ class UDPTransport:
                         assert_comm(
                             "T3", False,
                             f"Send failed after {attempt} attempts ({elapsed:.2f}s): {e}",
-                            "red", 5.0
+                            "red", 5.0,
+                            level=LogLevel.DEBUG
                         )
                         return False
 

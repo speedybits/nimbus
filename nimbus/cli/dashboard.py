@@ -98,7 +98,7 @@ class LiveDashboard:
     +--------------------------------------+
     |             SHORTCUTS                |
     +--------------------------------------+
-    |    LOG OUTPUT    |    XRCE DEBUG    |
+    |               LOG                    |
     +--------------------------------------+
     """
 
@@ -123,8 +123,7 @@ class LiveDashboard:
             console=self.console,
             screen=True,
         )
-        self._log = LogBuffer(max_lines=6)
-        self._xrce_log = LogBuffer(max_lines=6)
+        self._log = LogBuffer(max_lines=12)  # Unified log buffer
         self._keyboard = KeyboardHandler()
         self._last_state = None
         self._last_behavior = None
@@ -139,17 +138,12 @@ class LiveDashboard:
             Layout(name="top", size=10),
             Layout(name="lidar", size=12),
             Layout(name="shortcuts", size=3),
-            Layout(name="bottom", size=8),
+            Layout(name="logs", size=10),  # Unified log panel
         )
 
         layout["top"].split_row(
             Layout(name="sensors"),
             Layout(name="status"),
-        )
-
-        layout["bottom"].split_row(
-            Layout(name="logs"),
-            Layout(name="xrce"),
         )
 
         # Header
@@ -164,16 +158,16 @@ class LiveDashboard:
         self._live.__enter__()
         self._keyboard.start()
         self._log.append("[green]Dashboard started[/green]")
-        # Register XRCE logger callback
+        # Register unified log callback
         try:
             from nimbus.core.xrce.logger import set_log_callback
-            set_log_callback(self.xrce_log)
+            set_log_callback(self.log)
         except ImportError:
             pass
         return self
 
     def __exit__(self, *args):
-        # Unregister XRCE logger callback
+        # Unregister log callback
         try:
             from nimbus.core.xrce.logger import set_log_callback
             set_log_callback(None)
@@ -196,7 +190,6 @@ class LiveDashboard:
         self._update_lidar(context)
         self._update_shortcuts()
         self._update_logs()
-        self._update_xrce_logs()
 
     def _update_sensors(self, context) -> None:
         """Update sensors panel."""
@@ -467,19 +460,22 @@ class LiveDashboard:
         self._layout["shortcuts"].update(Panel(text, title="Shortcuts", border_style="magenta"))
 
     def _update_logs(self) -> None:
-        """Update log output panel."""
-        text = Text.from_markup(self._log.get_text())
-        self._layout["logs"].update(Panel(text, title="Log", border_style="yellow"))
+        """Update unified log panel with verbosity indicator."""
+        from nimbus.core.xrce.logger import get_log_file_path, get_verbosity
 
-    def _update_xrce_logs(self) -> None:
-        """Update XRCE debug panel."""
-        text = Text.from_markup(self._xrce_log.get_text())
-        self._layout["xrce"].update(Panel(text, title="XRCE Debug", border_style="cyan"))
+        verbosity = get_verbosity()
+        verbosity_names = {1: "minimal", 2: "normal", 3: "debug"}
+        verbosity_name = verbosity_names.get(verbosity, "normal")
+
+        text = Text.from_markup(self._log.get_text())
+        log_path = get_log_file_path()
+        self._layout["logs"].update(Panel(
+            text,
+            title=f"Log [dim](-v {verbosity}: {verbosity_name})[/dim]",
+            subtitle=f"[dim]{log_path}[/dim]",
+            border_style="yellow"
+        ))
 
     def log(self, message: str) -> None:
         """Add a message to the log buffer (public API)."""
         self._log.append(message)
-
-    def xrce_log(self, message: str) -> None:
-        """Add a message to the XRCE debug buffer (public API)."""
-        self._xrce_log.append(message)

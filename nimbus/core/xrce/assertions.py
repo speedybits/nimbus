@@ -1,36 +1,22 @@
 """Communication assertions with rate limiting and dashboard integration.
 
 This module provides assertion helpers that detect error conditions during
-robot communication and route them to the appropriate display:
-- Critical errors → Dashboard Log pane (user-visible)
-- Protocol details → XRCE Debug pane
+robot communication and route them to the unified log display.
 
 Features:
 - Rate limiting to prevent spam from repeated failures
 - Suppression counting to show missed events
-- Dual-pane routing for different severity levels
+- Verbosity-aware routing through xrce_log()
 """
 
 import time
-from typing import Optional, Callable
+from typing import Optional
 
-# Dashboard log callback (routes to Log pane)
-_dashboard_log: Optional[Callable[[str], None]] = None
+from .logger import xrce_log, LogLevel
 
 # Rate limiting state
 _last_fired: dict[str, float] = {}
 _fire_counts: dict[str, int] = {}
-
-
-def set_dashboard_log(callback: Optional[Callable[[str], None]]) -> None:
-    """
-    Set the callback for dashboard Log pane messages.
-
-    Args:
-        callback: Function that takes a log message string, or None to disable
-    """
-    global _dashboard_log
-    _dashboard_log = callback
 
 
 def assert_comm(
@@ -40,12 +26,13 @@ def assert_comm(
     severity: str = "yellow",
     cooldown: float = 5.0,
     xrce_detail: Optional[str] = None,
+    level: LogLevel = LogLevel.NORMAL,
 ) -> bool:
     """
     Fire assertion if condition is False.
 
-    Routes messages to both the dashboard Log pane (user-visible) and
-    XRCE Debug pane (protocol details). Rate-limited to prevent spam.
+    Routes messages through the unified xrce_log() with verbosity support.
+    Rate-limited to prevent spam.
 
     Args:
         assertion_id: Unique ID for rate limiting (e.g., "T1", "S3")
@@ -53,7 +40,8 @@ def assert_comm(
         message: User-facing message (supports Rich markup)
         severity: Rich style for message ("yellow", "red", "bold red")
         cooldown: Minimum seconds between fires for same assertion_id
-        xrce_detail: Optional additional detail for XRCE Debug pane only
+        xrce_detail: Optional additional detail (shown at DEBUG level)
+        level: Log level for this assertion (default: NORMAL)
 
     Returns:
         The condition value (True = OK, False = assertion fired)
@@ -79,15 +67,10 @@ def assert_comm(
     if count > 1:
         formatted += f" [dim](+{count - 1} suppressed)[/dim]"
 
-    # Route to dashboard Log pane (user-visible)
-    if _dashboard_log:
-        _dashboard_log(formatted)
-
-    # Also log to XRCE Debug pane with optional detail
-    from .logger import xrce_log
-    xrce_log(formatted)
+    # Route through unified xrce_log with appropriate level
+    xrce_log(formatted, level=level)
     if xrce_detail:
-        xrce_log(f"  [dim]{xrce_detail}[/dim]")
+        xrce_log(f"  [dim]{xrce_detail}[/dim]", level=LogLevel.DEBUG)
 
     return False
 

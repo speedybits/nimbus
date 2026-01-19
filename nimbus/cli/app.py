@@ -32,6 +32,7 @@ def run(
     xrce: bool = typer.Option(False, "--xrce", help="Pure Python XRCE mode (no ROS2/Docker required)"),
     direct: bool = typer.Option(False, "--direct", hidden=True, help="Deprecated alias for --xrce"),
     discover: bool = typer.Option(False, "--discover", help="Auto-discover ESP32 on network"),
+    verbosity: int = typer.Option(2, "-v", "--verbosity", min=1, max=3, help="Log verbosity: 1=minimal, 2=normal, 3=debug"),
 ):
     """
     Start Nimbus robot controller.
@@ -41,9 +42,16 @@ def run(
         nimbus run --behavior idle --no-dashboard
         nimbus run --xrce --behavior wander           # Pure Python XRCE mode
         nimbus run --xrce --discover --behavior wander  # Auto-discover ESP32
+        nimbus run --xrce -v 3                        # Debug verbosity
     """
     # Support both --xrce and deprecated --direct
     xrce = xrce or direct
+
+    # Set log verbosity for XRCE mode
+    if xrce:
+        from nimbus.core.xrce.logger import set_verbosity
+        set_verbosity(verbosity)
+
     from nimbus.core.runner import create_runner
 
     # Auto-discover ESP32 if requested (informational only in XRCE mode)
@@ -349,6 +357,7 @@ def explore(
     mock: bool = typer.Option(False, "--mock", help="Use mock node (no ROS2)"),
     xrce: bool = typer.Option(False, "--xrce", help="Pure Python XRCE mode (no ROS2/Docker required)"),
     direct: bool = typer.Option(False, "--direct", hidden=True, help="Deprecated alias for --xrce"),
+    verbosity: int = typer.Option(2, "-v", "--verbosity", min=1, max=3, help="Log verbosity: 1=minimal, 2=normal, 3=debug"),
 ):
     """
     Start AI-driven exploration with Ollama.
@@ -361,9 +370,16 @@ def explore(
         nimbus explore --memory kitchen             # Load/create kitchen memory
         nimbus explore --new living_room            # Start fresh exploration
         nimbus explore --xrce                       # Pure Python XRCE mode
+        nimbus explore --xrce -v 3                  # Debug verbosity
     """
     # Support both --xrce and deprecated --direct
     xrce = xrce or direct
+
+    # Set log verbosity for XRCE mode
+    if xrce:
+        from nimbus.core.xrce.logger import set_verbosity
+        set_verbosity(verbosity)
+
     from nimbus.core.runner import create_runner
     from nimbus.ai.memory import ExplorationMemory
 
