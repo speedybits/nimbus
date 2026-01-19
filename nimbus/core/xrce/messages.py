@@ -13,6 +13,7 @@ Supported messages:
 from dataclasses import dataclass, field
 from typing import List, Optional
 from .cdr import CDRReader, CDRWriter, parse_encapsulation, add_encapsulation
+from .logger import xrce_log
 
 
 # =============================================================================
@@ -271,6 +272,7 @@ class LaserScan:
         range_min = reader.read_float32()
         range_max = reader.read_float32()
         ranges = reader.read_float32_array()
+        xrce_log(f"LaserScan: {len(ranges)} ranges, frame_id={frame_id}")
         intensities = reader.read_float32_array()
         return cls(
             header=Header(frame_id=frame_id),

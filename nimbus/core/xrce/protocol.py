@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Optional, List
 
+from .logger import xrce_log
+
 
 # =============================================================================
 # Protocol Constants (from eProsima Micro-XRCE-DDS source)
@@ -238,6 +240,7 @@ def parse_message(data: bytes) -> Optional[ParsedMessage]:
 
         payload_end = offset + submsg_header.length
         if payload_end > len(data):
+            xrce_log(f"[red]Parse error: need {submsg_header.length} bytes, have {len(data) - offset}[/red]")
             break
 
         payload = data[offset:payload_end]

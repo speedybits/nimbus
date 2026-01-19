@@ -98,7 +98,7 @@ class LiveDashboard:
     +--------------------------------------+
     |             SHORTCUTS                |
     +--------------------------------------+
-    |              LOG OUTPUT              |
+    |    LOG OUTPUT    |    XRCE DEBUG    |
     +--------------------------------------+
     """
 
@@ -124,6 +124,7 @@ class LiveDashboard:
             screen=True,
         )
         self._log = LogBuffer(max_lines=6)
+        self._xrce_log = LogBuffer(max_lines=6)
         self._keyboard = KeyboardHandler()
         self._last_state = None
         self._last_behavior = None
@@ -138,12 +139,17 @@ class LiveDashboard:
             Layout(name="top", size=10),
             Layout(name="lidar", size=12),
             Layout(name="shortcuts", size=3),
-            Layout(name="logs", size=8),
+            Layout(name="bottom", size=8),
         )
 
         layout["top"].split_row(
             Layout(name="sensors"),
             Layout(name="status"),
+        )
+
+        layout["bottom"].split_row(
+            Layout(name="logs"),
+            Layout(name="xrce"),
         )
 
         # Header
@@ -158,9 +164,21 @@ class LiveDashboard:
         self._live.__enter__()
         self._keyboard.start()
         self._log.append("[green]Dashboard started[/green]")
+        # Register XRCE logger callback
+        try:
+            from nimbus.core.xrce.logger import set_log_callback
+            set_log_callback(self.xrce_log)
+        except ImportError:
+            pass
         return self
 
     def __exit__(self, *args):
+        # Unregister XRCE logger callback
+        try:
+            from nimbus.core.xrce.logger import set_log_callback
+            set_log_callback(None)
+        except ImportError:
+            pass
         self._keyboard.stop()
         self._live.__exit__(*args)
 
@@ -178,6 +196,7 @@ class LiveDashboard:
         self._update_lidar(context)
         self._update_shortcuts()
         self._update_logs()
+        self._update_xrce_logs()
 
     def _update_sensors(self, context) -> None:
         """Update sensors panel."""
@@ -452,6 +471,15 @@ class LiveDashboard:
         text = Text.from_markup(self._log.get_text())
         self._layout["logs"].update(Panel(text, title="Log", border_style="yellow"))
 
+    def _update_xrce_logs(self) -> None:
+        """Update XRCE debug panel."""
+        text = Text.from_markup(self._xrce_log.get_text())
+        self._layout["xrce"].update(Panel(text, title="XRCE Debug", border_style="cyan"))
+
     def log(self, message: str) -> None:
         """Add a message to the log buffer (public API)."""
         self._log.append(message)
+
+    def xrce_log(self, message: str) -> None:
+        """Add a message to the XRCE debug buffer (public API)."""
+        self._xrce_log.append(message)

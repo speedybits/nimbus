@@ -58,6 +58,7 @@ from .session import SessionManager
 from .entities import EntityManager, normalize_topic_name
 from .transport import UDPTransport, UDPConfig
 from .messages import LaserScan, Odometry, Twist, MESSAGE_TYPES
+from .logger import xrce_log
 
 
 @dataclass
@@ -336,6 +337,7 @@ class XRCEAgent:
                 result = self._transport.receive(timeout=self.RECEIVE_TIMEOUT)
                 if result:
                     data, addr = result
+                    xrce_log(f"Received {len(data)} bytes from {addr}")
                     self._client_addr = addr
                     self._process_message(data)
             except Exception as e:
@@ -482,7 +484,9 @@ class XRCEAgent:
         # Detect topic from payload content
         topic = self._detect_topic_from_payload(submsg.payload)
         if not topic:
+            xrce_log(f"[yellow]Topic detection failed for {len(submsg.payload)} byte payload[/yellow]")
             return
+        xrce_log(f"Detected topic: [cyan]{topic}[/cyan]")
 
         # Get subscription
         with self._lock:
@@ -498,9 +502,10 @@ class XRCEAgent:
                 sub.last_data = msg
                 sub.last_update = time.time()
                 sub.message_count += 1
+                xrce_log(f"[green]{topic}[/green]: msg #{sub.message_count}, ranges={len(msg.ranges) if hasattr(msg, 'ranges') else 'N/A'}")
                 callback = sub.callback
             except Exception as e:
-                # Silently skip deserialization errors (might be wrong topic detection)
+                xrce_log(f"[red]Deserialization error for {topic}: {e}[/red]")
                 return
 
         # Call callback outside lock
