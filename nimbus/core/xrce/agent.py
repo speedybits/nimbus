@@ -260,8 +260,10 @@ class XRCEAgent:
 
             # Find ESP32's datareader for this topic
             dr_id = self._entities.get_datareader_for_topic(normalized)
+            if dr_id is None and normalized == "/cmd_vel":
+                dr_id = 6400  # Fallback ID - ESP32 always uses 6400 for /cmd_vel
+            xrce_log(f"[yellow]PUBLISH {normalized}: dr_id={dr_id}[/yellow]", level=LogLevel.NORMAL)
             if dr_id is None:
-                # ESP32 hasn't created a datareader for this topic yet
                 subscribed = self._entities.get_subscribed_topics()
                 assert_comm(
                     "PUB2", False,
@@ -272,12 +274,31 @@ class XRCEAgent:
                 return False
 
             # Build and send DATA message
+            # Use request_id from READ_DATA if available
+            request_id = 0
+            if hasattr(self, '_pending_read_requests'):
+                request_id = self._pending_read_requests.get(dr_id, 0)
             seq = self._session.next_sequence()
-            msg = build_data(dr_id, data, seq)
+            msg = build_data(dr_id, data, seq, request_id)
+            # Log first DATA message for debugging (reset on restart)
+            if not hasattr(self, '_logged_data_msg') or self._logged_data_msg < 2:
+                self._logged_data_msg = getattr(self, '_logged_data_msg', 0) + 1
+                xrce_log(f"[bold yellow]DATA msg hex: {msg.hex()}[/bold yellow]", level=LogLevel.NORMAL)
             success = self._transport.send(msg, self._client_addr)
 
             if success:
                 self._publishers[normalized].message_count += 1
+                # Log velocity values for /cmd_vel debugging
+                if normalized == "/cmd_vel" and len(data) >= 48:
+                    try:
+                        import struct as st
+                        # Skip encapsulation header if present
+                        offset = 4 if data[:2] == b'\x00\x01' else 0
+                        lin_x = st.unpack_from('<d', data, offset)[0]
+                        ang_z = st.unpack_from('<d', data, offset + 40)[0]  # angular.z is 6th float64
+                        xrce_log(f"[green]CMD_VEL: lin={lin_x:.3f} ang={ang_z:.3f}[/green]", level=LogLevel.NORMAL)
+                    except:
+                        pass
                 xrce_log(f"[green]Published to {normalized}: {len(data)} bytes[/green]", level=LogLevel.DEBUG)
             else:
                 assert_comm(
@@ -419,9 +440,11 @@ class XRCEAgent:
                         )
 
                     # Active keepalive probing when connected but idle
-                    if self._client_addr and now - self._last_probe_time > self.PROBE_INTERVAL:
-                        self._send_keepalive_probe()
-                        self._last_probe_time = now
+                    # DISABLED: May interfere with ESP32 during entity creation
+                    # if self._client_addr and now - self._last_probe_time > self.PROBE_INTERVAL:
+                    #     self._send_keepalive_probe()
+                    #     self._last_probe_time = now
+                    pass
 
             except Exception as e:
                 if self._running:
@@ -442,6 +465,15 @@ class XRCEAgent:
         stream_id = parsed.header.stream_id
         seq_num = parsed.header.sequence_nr
 
+        # Log message summary for debugging
+        def get_submsg_name(s):
+            try:
+                return s.submessage_id.name if hasattr(s.submessage_id, 'name') else f"0x{s.submessage_id:02x}"
+            except:
+                return str(s.submessage_id)
+        submsg_names = [get_submsg_name(s) for s in parsed.submessages]
+        xrce_log(f"[dim]MSG stream={stream_id:#x} seq={seq_num} submsgs={submsg_names}[/dim]", level=LogLevel.NORMAL)
+
         for submsg in parsed.submessages:
             try:
                 self._handle_submessage(submsg, seq_num)
@@ -461,6 +493,10 @@ class XRCEAgent:
         """Route submessage to appropriate handler."""
         submsg_id = submsg.submessage_id
 
+        # Log all submessage types for debugging
+        submsg_name = submsg_id.name if hasattr(submsg_id, 'name') else f"0x{submsg_id:02x}"
+        xrce_log(f"[dim]Submsg: {submsg_name} seq={seq_num}[/dim]", level=LogLevel.DEBUG)
+
         if submsg_id == SubmessageId.CREATE_CLIENT:
             self._handle_create_client(submsg)
 
@@ -468,9 +504,12 @@ class XRCEAgent:
             self._handle_timestamp(submsg)
 
         elif submsg_id == SubmessageId.CREATE:
+            xrce_log(f"[bold magenta]Received CREATE submsg, seq={seq_num}[/bold magenta]", level=LogLevel.NORMAL)
             # Skip duplicate/retransmitted CREATE messages
             if not self._session.is_duplicate(submsg_id, seq_num):
                 self._handle_create(submsg)
+            else:
+                xrce_log(f"[dim]Skipping duplicate CREATE seq={seq_num}[/dim]", level=LogLevel.NORMAL)
 
         elif submsg_id == SubmessageId.WRITE_DATA:
             self._handle_write_data(submsg)
@@ -521,13 +560,15 @@ class XRCEAgent:
         was_connected = self._session.is_connected
         old_key = self._session.client_key
 
-        # Handle reconnection - clear stale state only for genuine reconnects
+        # Handle reconnection - clear stale state only for NEW sessions
         if was_connected:
             if old_key != client_key:
                 assert_comm("S2", True, "ESP32 reconnected (new session)", "green", 5.0, level=LogLevel.NORMAL)
+                self._soft_reset()  # Only reset for new session - ESP32 will resend CREATEs
             else:
                 assert_comm("S6", True, "ESP32 reconnected (same session)", "cyan", 5.0, level=LogLevel.NORMAL)
-            self._soft_reset()
+                # Clear seen_requests so we don't skip CREATE messages with same seq_nums
+                self._session.session._seen_requests.clear()
 
         self._session.handle_create_client(client_key)
 
@@ -578,11 +619,11 @@ class XRCEAgent:
         # Track the entity
         self._entities.handle_create(raw_obj_id, obj_kind, submsg.payload)
 
-        # Log entity creation
-        xrce_log(f"[cyan]CREATE {obj_kind.name} id={raw_obj_id}[/cyan]", level=LogLevel.DEBUG)
+        # Log entity creation - always show CREATE messages for debugging
+        xrce_log(f"[bold cyan]CREATE {obj_kind.name} id={raw_obj_id}[/bold cyan]", level=LogLevel.NORMAL)
         if obj_kind == ObjectKind.DATAREADER:
             topics = self._entities.get_subscribed_topics()
-            xrce_log(f"[cyan]  ESP32 now subscribes to: {topics}[/cyan]", level=LogLevel.NORMAL)
+            xrce_log(f"[bold green]  ESP32 now subscribes to: {topics}[/bold green]", level=LogLevel.NORMAL)
 
         # Send STATUS OK
         seq = self._session.next_sequence()
@@ -715,8 +756,8 @@ class XRCEAgent:
         """
         Handle READ_DATA from ESP32.
 
-        The ESP32 requests data; we respond with STATUS OK.
-        In continuous publishing mode, we don't need to do anything special.
+        The ESP32 requests data for a DataReader. We store the request_id
+        so we can respond with DATA when publishing.
         """
         if len(submsg.payload) < 4:
             return
@@ -724,10 +765,11 @@ class XRCEAgent:
         raw_obj_id = struct.unpack('<H', submsg.payload[0:2])[0]
         request_id = struct.unpack('<H', submsg.payload[2:4])[0]
 
-        # Just send STATUS OK
-        seq = self._session.next_sequence()
-        msg = build_status_ok(raw_obj_id, request_id, seq)
-        self._transport.send(msg, self._client_addr)
+        # Store the request_id for this datareader so we can respond correctly
+        if not hasattr(self, '_pending_read_requests'):
+            self._pending_read_requests = {}
+        self._pending_read_requests[raw_obj_id] = request_id
+        xrce_log(f"[cyan]READ_DATA: obj={raw_obj_id} req={request_id}[/cyan]", level=LogLevel.NORMAL)
 
     def _handle_fragment(self, submsg: ParsedSubmessage) -> None:
         """

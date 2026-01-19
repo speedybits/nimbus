@@ -4,6 +4,10 @@ Live terminal dashboard for Nimbus.
 Uses Rich for beautiful, real-time visualization.
 """
 
+import json
+import time
+from pathlib import Path
+
 from rich.console import Console
 from rich.live import Live
 from rich.layout import Layout
@@ -181,6 +185,19 @@ class LiveDashboard:
         # Process keyboard input
         self._process_keys()
 
+        # Check if we're still waiting for connection
+        sensors = context.sensors
+        has_data = sensors and (sensors.lidar_ranges or sensors.pose.x != 0 or sensors.pose.y != 0)
+
+        if not has_data and not hasattr(self, '_ever_connected'):
+            # Show waiting message instead of empty panes
+            self._show_waiting_message()
+            self._update_logs()
+            return
+
+        if has_data:
+            self._ever_connected = True
+
         # Track state/behavior changes for logging
         self._log_changes(context)
 
@@ -190,6 +207,32 @@ class LiveDashboard:
         self._update_lidar(context)
         self._update_shortcuts()
         self._update_logs()
+
+        # Write state for Claude every second
+        now = time.time()
+        if not hasattr(self, '_last_claude_write') or now - self._last_claude_write >= 1.0:
+            self._write_claude_state(context)
+            self._last_claude_write = now
+
+    def _show_waiting_message(self) -> None:
+        """Show waiting for connection message."""
+        waiting_text = Text()
+        waiting_text.append("\n\n")
+        waiting_text.append("⏳ Please wait up to 30 seconds for robot to connect...\n\n", style="bold yellow")
+        waiting_text.append("The ESP32 needs time to establish the XRCE-DDS connection.\n", style="dim")
+        waiting_text.append("If it doesn't connect, try power cycling the robot.", style="dim")
+
+        # Fill all the main panels with the waiting message
+        self._layout["sensors"].update(Panel(waiting_text, title="Connecting...", border_style="yellow"))
+        self._layout["status"].update(Panel(Text("", justify="center"), title="Status", border_style="dim"))
+        self._layout["lidar"].update(Panel(
+            Text("\n\n      Waiting for LIDAR data...", style="dim", justify="center"),
+            title="LIDAR View", border_style="dim"
+        ))
+        self._layout["shortcuts"].update(Panel(
+            Text("[dim]Q: quit[/dim]", justify="center"),
+            title="Shortcuts", border_style="dim"
+        ))
 
     def _update_sensors(self, context) -> None:
         """Update sensors panel."""
@@ -479,3 +522,40 @@ class LiveDashboard:
     def log(self, message: str) -> None:
         """Add a message to the log buffer (public API)."""
         self._log.append(message)
+
+    def _write_claude_state(self, context) -> None:
+        """Write state for Claude Code to read."""
+        sensors = context.sensors
+        state = {
+            "timestamp": datetime.now().isoformat(),
+            "robot": {
+                "state": context.state.name,
+                "behavior": context.current_behavior,
+                "pose": {
+                    "x": round(sensors.pose.x, 3),
+                    "y": round(sensors.pose.y, 3),
+                    "theta": round(sensors.pose.theta, 3)
+                } if sensors else None,
+                "velocity": {
+                    "linear": round(sensors.velocity.linear, 3),
+                    "angular": round(sensors.velocity.angular, 3)
+                } if sensors else None,
+                "closest_obstacle": round(sensors.closest_obstacle, 3) if sensors and sensors.closest_obstacle else None,
+                "target": {
+                    "x": context.target.x,
+                    "y": context.target.y,
+                    "theta": context.target.theta
+                } if context.target else None
+            },
+            "logs": list(self._log.lines)[-20:],
+            "available_behaviors": list(self.runner.available_behaviors),
+            "api_port": 8080
+        }
+
+        state_path = Path.home() / ".nimbus" / "claude_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Atomic write to prevent partial reads
+        tmp_path = state_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(state, indent=2))
+        tmp_path.rename(state_path)
