@@ -40,11 +40,11 @@ class WanderBehavior(Behavior):
 
     def __init__(
         self,
-        forward_speed: float = 0.2,
-        turn_speed: float = 0.5,
+        forward_speed: float = 0.15,   # 15 cm/s - ESP32 examples use 0.5
+        turn_speed: float = 0.5,       # 0.5 rad/s - ESP32 examples use 1.5
         direction_change_interval: float = 10.0,  # seconds
         # Recovery parameters
-        backup_speed: float = 0.1,
+        backup_speed: float = 0.05,
         backup_duration: float = 1.5,  # seconds to back up
         turn_duration: float = 1.0,    # seconds to turn after backup
         stuck_threshold: float = 1.0,  # seconds before triggering recovery
@@ -173,8 +173,8 @@ class WanderBehavior(Behavior):
         steering_scale = 1.0 - min(abs(steering) / 1.5, 0.7)
         linear = self.forward_speed * steering_scale * dist_scale
 
-        # Convert steering angle to angular velocity
-        angular = steering * 1.5  # Gain factor
+        # Convert steering angle to angular velocity using turn_speed as gain
+        angular = steering * self.turn_speed
 
         return Velocity(linear=linear, angular=angular)
 
@@ -224,6 +224,27 @@ class WanderBehavior(Behavior):
         self._goal_direction = random.gauss(0.0, math.pi / 4)
         # Clamp to reasonable range
         self._goal_direction = max(-math.pi / 2, min(math.pi / 2, self._goal_direction))
+
+    def adjust_speed(self, factor: float) -> tuple[float, float]:
+        """
+        Adjust forward and turn speeds by a factor.
+
+        Args:
+            factor: Multiplier (e.g., 1.5 to increase 50%, 0.5 to decrease 50%)
+
+        Returns:
+            Tuple of (new_forward_speed, new_turn_speed)
+        """
+        self.forward_speed = max(0.05, min(0.5, self.forward_speed * factor))   # 5cm/s to 50cm/s
+        self.turn_speed = max(0.2, min(2.0, self.turn_speed * factor))          # 0.2 to 2.0 rad/s
+        # Also adjust backup speed proportionally
+        self.backup_speed = max(0.05, min(0.3, self.backup_speed * factor))
+        return (self.forward_speed, self.turn_speed)
+
+    def set_speed(self, forward: float, turn: float) -> None:
+        """Set speeds directly."""
+        self.forward_speed = max(0.05, min(0.5, forward))    # 5cm/s to 50cm/s
+        self.turn_speed = max(0.2, min(2.0, turn))           # 0.2 to 2.0 rad/s
 
 
 class SimpleWanderBehavior(Behavior):

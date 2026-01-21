@@ -115,6 +115,7 @@ class LiveDashboard:
         'p': 'patrol',
         'x': 'explore',
         'a': 'ai_explore',
+        'm': 'motor_test',
     }
 
     def __init__(self, runner, console: Console = None):
@@ -246,8 +247,10 @@ class LiveDashboard:
             table.add_row("Position X:", f"{sensors.pose.x:.3f} m")
             table.add_row("Position Y:", f"{sensors.pose.y:.3f} m")
             table.add_row("Heading:", f"{math.degrees(sensors.pose.theta):.1f} deg")
-            table.add_row("Linear Vel:", f"{sensors.velocity.linear:.2f} m/s")
-            table.add_row("Angular Vel:", f"{sensors.velocity.angular:.2f} rad/s")
+            table.add_row("Odom Vel:", f"{sensors.velocity.linear:.3f} / {sensors.velocity.angular:.3f}")
+            # Show commanded velocity (what we're sending to motors)
+            cmd = context.velocity_cmd
+            table.add_row("Cmd Vel:", Text(f"{cmd.linear:.3f} / {cmd.angular:.3f}", style="yellow"))
             table.add_row("Closest:", f"{sensors.closest_obstacle:.2f} m")
         else:
             table.add_row("Status:", "No sensor data")
@@ -294,6 +297,11 @@ class LiveDashboard:
             table.add_row("Safety:", Text("CAUTION", style="yellow"))
         else:
             table.add_row("Safety:", Text("OK", style="green"))
+
+        # Show wander speed settings
+        wander = self.runner._behavior_manager.get_behavior("wander")
+        if wander and hasattr(wander, 'forward_speed'):
+            table.add_row("Set Speed:", f"fwd={wander.forward_speed:.3f} turn={wander.turn_speed:.3f}")
 
         # Show exploration progress if in explore mode
         if behavior == "explore":
@@ -436,6 +444,9 @@ class LiveDashboard:
             if key is None:
                 break
 
+            # Debug: log all key presses
+            self._log.append(f"[dim]Key: {repr(key)}[/dim]")
+
             # Handle quit
             if key.lower() == 'q':
                 self._log.append("[yellow]Quit requested[/yellow]")
@@ -454,6 +465,56 @@ class LiveDashboard:
             elif key.lower() == 'e':
                 self.runner.emergency_stop()
                 self._log.append("[bold red]EMERGENCY STOP[/bold red]")
+
+            # Handle speed adjustment
+            elif key in ('+', '='):
+                self._adjust_wander_speed(1.5)  # Increase 50%
+            elif key == '-':
+                self._adjust_wander_speed(0.67)  # Decrease ~33%
+
+            # Handle motor test controls (when in motor_test mode)
+            elif self.runner.current_behavior == 'motor_test':
+                self._handle_motor_test_key(key)
+
+    def _adjust_wander_speed(self, factor: float) -> None:
+        """Adjust wander behavior speed by factor."""
+        # Try to get the wander behavior
+        try:
+            wander = self.runner._behavior_manager.get_behavior("wander")
+            if wander and hasattr(wander, 'adjust_speed'):
+                fwd, turn = wander.adjust_speed(factor)
+                self._log.append(f"[cyan]Speed: fwd={fwd:.3f} turn={turn:.3f}[/cyan]")
+            else:
+                avail = list(self.runner._behavior_manager._behaviors.keys())
+                self._log.append(f"[yellow]No wander behavior. Available: {avail}[/yellow]")
+        except Exception as e:
+            self._log.append(f"[red]Speed error: {e}[/red]")
+
+    def _handle_motor_test_key(self, key: str) -> None:
+        """Handle motor test control keys."""
+        try:
+            motor_test = self.runner._behavior_manager.get_behavior("motor_test")
+            if not motor_test:
+                return
+
+            # Direction controls: 8/k=fwd, 2/j=back, 4/h=left, 6/l=right, 5/space/0=stop
+            if key in ('8', 'k'):
+                lin, ang = motor_test.forward()
+                self._log.append(f"[green]FORWARD[/green] lin={lin:.2f} ang={ang:.2f}")
+            elif key in ('2', 'j'):
+                lin, ang = motor_test.backward()
+                self._log.append(f"[yellow]BACKWARD[/yellow] lin={lin:.2f} ang={ang:.2f}")
+            elif key in ('4', 'h'):
+                lin, ang = motor_test.left()
+                self._log.append(f"[cyan]LEFT[/cyan] lin={lin:.2f} ang={ang:.2f}")
+            elif key in ('6', 'l'):
+                lin, ang = motor_test.right()
+                self._log.append(f"[magenta]RIGHT[/magenta] lin={lin:.2f} ang={ang:.2f}")
+            elif key in ('5', ' ', '0'):
+                lin, ang = motor_test.stop_motion()
+                self._log.append(f"[red]STOP[/red] lin={lin:.2f} ang={ang:.2f}")
+        except Exception as e:
+            self._log.append(f"[red]Motor test error: {e}[/red]")
 
     def _log_changes(self, context) -> None:
         """Log state and behavior changes."""
@@ -488,16 +549,31 @@ class LiveDashboard:
         """Update shortcuts panel showing available key bindings."""
         current = self.runner.current_behavior or ""
 
-        # Build shortcuts display with clear key indicators
-        shortcuts = []
-        for key, behavior in self.KEY_MAPPINGS.items():
-            if behavior == current:
-                shortcuts.append(f"[bold cyan]{key.upper()}:{behavior}[/bold cyan]")
-            else:
-                shortcuts.append(f"[white]{key.upper()}[/white]:[dim]{behavior}[/dim]")
+        # Show motor test controls when in motor_test mode
+        if current == "motor_test":
+            shortcuts = [
+                "[bold cyan]M:motor_test[/bold cyan]",
+                "[white]8/K[/white]:[dim]fwd[/dim]",
+                "[white]2/J[/white]:[dim]back[/dim]",
+                "[white]4/H[/white]:[dim]left[/dim]",
+                "[white]6/L[/white]:[dim]right[/dim]",
+                "[white]5/SPACE[/white]:[dim]stop[/dim]",
+                "[white]I[/white]:[dim]idle[/dim]",
+                "[white]E[/white]:[dim]emergency[/dim]",
+                "[white]Q[/white]:[dim]quit[/dim]",
+            ]
+        else:
+            # Build shortcuts display with clear key indicators
+            shortcuts = []
+            for key, behavior in self.KEY_MAPPINGS.items():
+                if behavior == current:
+                    shortcuts.append(f"[bold cyan]{key.upper()}:{behavior}[/bold cyan]")
+                else:
+                    shortcuts.append(f"[white]{key.upper()}[/white]:[dim]{behavior}[/dim]")
 
-        shortcuts.append("[white]E[/white]:[dim]emergency[/dim]")
-        shortcuts.append("[white]Q[/white]:[dim]quit[/dim]")
+            shortcuts.append("[white]+/-[/white]:[dim]speed[/dim]")
+            shortcuts.append("[white]E[/white]:[dim]emergency[/dim]")
+            shortcuts.append("[white]Q[/white]:[dim]quit[/dim]")
 
         text = Text.from_markup("  ".join(shortcuts))
         self._layout["shortcuts"].update(Panel(text, title="Shortcuts", border_style="magenta"))
