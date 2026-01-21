@@ -261,8 +261,12 @@ class XRCEAgent:
             # Find ESP32's datareader for this topic
             dr_id = self._entities.get_datareader_for_topic(normalized)
             if dr_id is None and normalized == "/cmd_vel":
-                dr_id = 6400  # Fallback ID - ESP32 always uses 6400 for /cmd_vel
-            xrce_log(f"[yellow]PUBLISH {normalized}: dr_id={dr_id}[/yellow]", level=LogLevel.NORMAL)
+                dr_id = 6400  # Fallback datareader ID for /cmd_vel
+
+            # IMPORTANT: ESP32 uses datareader_id + 256 in READ_DATA/DATA messages
+            # This offset is required for the ESP32 to recognize the DATA message
+            data_obj_id = dr_id + 256 if dr_id is not None else None
+            xrce_log(f"[yellow]PUBLISH {normalized}: dr_id={dr_id} data_obj_id={data_obj_id}[/yellow]", level=LogLevel.NORMAL)
             if dr_id is None:
                 subscribed = self._entities.get_subscribed_topics()
                 assert_comm(
@@ -274,12 +278,14 @@ class XRCEAgent:
                 return False
 
             # Build and send DATA message
-            # Use request_id from READ_DATA if available
-            request_id = 0
+            # Use request_id from READ_DATA if available (keyed by data_obj_id)
+            # Default to 1536 which is the typical READ_DATA request_id for /cmd_vel
+            request_id = 1536
             if hasattr(self, '_pending_read_requests'):
-                request_id = self._pending_read_requests.get(dr_id, 0)
+                request_id = self._pending_read_requests.get(data_obj_id, 1536)
+            xrce_log(f"[cyan]DATA: obj_id={data_obj_id} req_id={request_id}[/cyan]", level=LogLevel.NORMAL)
             seq = self._session.next_sequence()
-            msg = build_data(dr_id, data, seq, request_id)
+            msg = build_data(data_obj_id, data, seq, request_id)
             # Log first DATA message for debugging (reset on restart)
             if not hasattr(self, '_logged_data_msg') or self._logged_data_msg < 2:
                 self._logged_data_msg = getattr(self, '_logged_data_msg', 0) + 1

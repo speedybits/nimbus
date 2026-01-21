@@ -395,11 +395,10 @@ def build_data(object_id: int, cdr_data: bytes, seq_num: int, request_id: int = 
     Returns:
         Complete XRCE message bytes
 
-    DATA submessage format (mirrors WRITE_DATA from ESP32):
+    DATA submessage format (matching Docker micro-ros-agent):
         - object_id (2 bytes): datareader object ID
         - request_id (2 bytes): from READ_DATA or 0
-        - format_flags (4 bytes): 0x0f 0x00 0x00 0x00
-        - CDR data WITHOUT encapsulation header
+        - CDR data WITHOUT encapsulation header (NO format_flags!)
     """
     # Strip CDR encapsulation if present
     if len(cdr_data) >= 4 and cdr_data[:2] == b'\x00\x01':
@@ -407,10 +406,10 @@ def build_data(object_id: int, cdr_data: bytes, seq_num: int, request_id: int = 
     else:
         raw_cdr = cdr_data
 
-    # DATA payload matching WRITE_DATA format
+    # DATA payload format (matches Docker micro-ros-agent capture)
+    # NO format_flags - CDR data follows immediately after request_id
     payload = struct.pack('<H', object_id)      # object_id (2 bytes)
     payload += struct.pack('<H', request_id)    # request_id (2 bytes)
-    payload += bytes([0x0f, 0x00, 0x00, 0x00])  # format_flags (4 bytes)
     payload += raw_cdr                          # CDR data without encapsulation
 
     submsg = SubmessageHeader(
