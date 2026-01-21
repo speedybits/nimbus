@@ -185,6 +185,69 @@ def create_app() -> FastAPI:
 
         return _runner.safety_status
 
+    # --- Motor Test Endpoints ---
+
+    @app.post("/api/motor_test/velocity")
+    async def set_motor_test_velocity(linear: float = 0.0, angular: float = 0.0):
+        """Set motor test velocity (only works in motor_test mode)."""
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        if _runner.current_behavior != "motor_test":
+            raise HTTPException(400, detail="Not in motor_test mode. Set behavior to motor_test first.")
+
+        from nimbus.behaviors.motor_test import MotorTestBehavior
+        motor_test = _runner._behavior_manager.get_behavior("motor_test")
+        if not motor_test or not isinstance(motor_test, MotorTestBehavior):
+            raise HTTPException(500, detail="Motor test behavior not found")
+
+        motor_test.set_velocity(linear, angular)
+        return {
+            "status": "ok",
+            "linear": motor_test.linear,
+            "angular": motor_test.angular
+        }
+
+    @app.get("/api/motor_test/velocity")
+    async def get_motor_test_velocity():
+        """Get current motor test velocity setting."""
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        from nimbus.behaviors.motor_test import MotorTestBehavior
+        motor_test = _runner._behavior_manager.get_behavior("motor_test")
+        if not motor_test or not isinstance(motor_test, MotorTestBehavior):
+            raise HTTPException(500, detail="Motor test behavior not found")
+
+        lin, ang = motor_test.get_velocity()
+        return {
+            "linear": lin,
+            "angular": ang,
+            "active": _runner.current_behavior == "motor_test"
+        }
+
+    @app.get("/api/debug/xrce")
+    async def get_xrce_debug():
+        """Get XRCE agent debug info."""
+        if not _runner or not _runner._node:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        node = _runner._node
+        if not hasattr(node, '_agent'):
+            return {"error": "Not in XRCE mode"}
+
+        agent = node._agent
+        entities = agent._entities
+
+        return {
+            "connected": agent.is_connected,
+            "client_addr": agent._client_addr,
+            "published_topics": list(entities.get_published_topics()),
+            "subscribed_topics": list(entities.get_subscribed_topics()),
+            "datareaders": {k: v.topic for k, v in entities._datareaders.items()},
+            "topic_to_datareader": dict(entities._topic_to_datareader),
+        }
+
     # --- Exploration Endpoints ---
 
     @app.post("/api/explore/start")

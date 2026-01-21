@@ -30,6 +30,7 @@ from nimbus.behaviors.goto import GoToBehavior, PatrolBehavior
 from nimbus.behaviors.ai_explore import AIExploreBehavior
 from nimbus.behaviors.explore import ExploreBehavior
 from nimbus.behaviors.pet import PetBehavior
+from nimbus.behaviors.motor_test import MotorTestBehavior
 
 
 class NimbusRunner:
@@ -110,6 +111,7 @@ class NimbusRunner:
         ))
         self._behavior_manager.register(AIExploreBehavior())
         self._behavior_manager.register(PetBehavior())
+        self._behavior_manager.register(MotorTestBehavior())
 
     def _setup_signal_handlers(self) -> None:
         """Setup SIGINT/SIGTERM handlers for graceful shutdown."""
@@ -225,8 +227,8 @@ class NimbusRunner:
             if sleep_time > 0:
                 self._shutdown_event.wait(timeout=sleep_time)
 
-        # Cleanup
-        self._send_stop()
+        # Cleanup - send multiple stop commands for reliability
+        self._reliable_stop(attempts=5, delay=0.05)
         if self._node:
             self._node.shutdown()
 
@@ -238,20 +240,28 @@ class NimbusRunner:
         # Get velocity from behavior
         velocity = self._behavior_manager.compute(self._context)
 
-        # Apply safety filtering (only for obstacles in forward arc)
-        closest = self._context.sensors.closest_obstacle if self._context.sensors else float('inf')
-        obstacle_angle = self._context.sensors.obstacle_direction if self._context.sensors else 0.0
-        safe_linear, safe_angular = self._safety.limit_velocity(
-            velocity.linear, velocity.angular, closest, obstacle_angle
-        )
+        # Check if current behavior wants to bypass safety
+        current_behavior = self._behavior_manager.get_behavior(self._behavior_manager.active_behavior)
+        bypass_safety = getattr(current_behavior, 'bypass_safety', False) if current_behavior else False
 
-        # Smooth velocity
-        smooth_linear, smooth_angular = self._smoother.smooth(safe_linear, safe_angular)
+        if bypass_safety:
+            # Motor test mode - skip safety filtering entirely
+            smooth_linear, smooth_angular = self._smoother.smooth(velocity.linear, velocity.angular)
+        else:
+            # Apply safety filtering (only for obstacles in forward arc)
+            closest = self._context.sensors.closest_obstacle if self._context.sensors else float('inf')
+            obstacle_angle = self._context.sensors.obstacle_direction if self._context.sensors else 0.0
+            safe_linear, safe_angular = self._safety.limit_velocity(
+                velocity.linear, velocity.angular, closest, obstacle_angle
+            )
 
-        # Update state based on safety
-        if self._safety.is_emergency:
-            self._context.set_state(RobotState.EMERGENCY_STOP)
-            self._smoother.reset()
+            # Smooth velocity
+            smooth_linear, smooth_angular = self._smoother.smooth(safe_linear, safe_angular)
+
+            # Update state based on safety
+            if self._safety.is_emergency:
+                self._context.set_state(RobotState.EMERGENCY_STOP)
+                self._smoother.reset()
 
         # Store command
         self._context.set_velocity_cmd(Velocity(smooth_linear, smooth_angular))
@@ -304,12 +314,23 @@ class NimbusRunner:
         """Send stop command."""
         self._send_velocity(0.0, 0.0)
 
+    def _reliable_stop(self, attempts: int = 5, delay: float = 0.05) -> None:
+        """
+        Send multiple stop commands to ensure motors stop.
+
+        UDP is unreliable, so we send several stop commands with delays.
+        """
+        for i in range(attempts):
+            self._send_velocity(0.0, 0.0)
+            if i < attempts - 1:
+                time.sleep(delay)
+
     def stop(self) -> None:
         """Request graceful shutdown."""
         self._running = False
         self._shutdown_event.set()
-        # Immediately send stop command for safety
-        self._send_stop()
+        # Immediately send multiple stop commands for safety (UDP is unreliable)
+        self._reliable_stop(attempts=3, delay=0.03)
         self._smoother.reset()
 
     # --- Public API ---

@@ -173,6 +173,9 @@ class XRCEAgent:
         with self._lock:
             self._running = False
 
+            # Send emergency stop commands before closing transport
+            self._send_emergency_stops(count=3)
+
             if self._recv_thread:
                 self._recv_thread.join(timeout=1.0)
                 self._recv_thread = None
@@ -183,6 +186,16 @@ class XRCEAgent:
             self._subscriptions.clear()
             self._publishers.clear()
             self._client_addr = None
+
+    def _send_emergency_stops(self, count: int = 3) -> None:
+        """Send emergency stop commands before shutdown."""
+        if not self._client_addr:
+            return
+        stop_msg = Twist.create(linear_x=0.0, angular_z=0.0)
+        data = stop_msg.serialize()
+        for _ in range(count):
+            self.publish("/cmd_vel", data)
+            time.sleep(0.02)
 
     def subscribe(
         self,

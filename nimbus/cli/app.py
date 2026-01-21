@@ -103,6 +103,10 @@ def run(
     console.print(f"[green]Starting with behavior:[/green] {runner.current_behavior}")
     console.print(f"[green]Available behaviors:[/green] {', '.join(runner.available_behaviors)}")
 
+    # Auto-enable API when dashboard is active (for Claude integration)
+    if dashboard:
+        api = True
+
     # Start API server in background if enabled
     api_thread = None
     if api:
@@ -991,6 +995,81 @@ def wifi_discover(
         console.print(f"  [cyan]nimbus wifi discover --probe[/cyan]")
         console.print("\nOr specify the ESP32 IP manually:")
         console.print(f"  [cyan]nimbus run --direct --esp32-ip <IP> --behavior wander[/cyan]")
+
+
+@app.command()
+def motor(
+    action: str = typer.Argument(..., help="Action: forward, backward, left, right, stop, or velocity"),
+    speed: float = typer.Option(0.1, "--speed", "-s", help="Speed for preset actions (m/s or rad/s)"),
+    linear: Optional[float] = typer.Option(None, "--linear", "-l", help="Linear velocity for 'velocity' action"),
+    angular: Optional[float] = typer.Option(None, "--angular", "-a", help="Angular velocity for 'velocity' action"),
+):
+    """
+    Control motors directly (requires nimbus running in motor_test mode).
+
+    Preset actions use --speed for magnitude. The 'velocity' action
+    uses --linear and --angular for direct control.
+
+    Examples:
+        nimbus motor forward --speed 0.15     # Move forward
+        nimbus motor left --speed 0.5         # Turn left
+        nimbus motor stop                     # Stop motors
+        nimbus motor velocity -l 0.1 -a 0.2   # Custom velocity
+    """
+    import httpx
+
+    # Map preset actions to velocities
+    presets = {
+        "forward": (speed, 0.0),
+        "backward": (-speed, 0.0),
+        "left": (0.0, speed),
+        "right": (0.0, -speed),
+        "stop": (0.0, 0.0),
+    }
+
+    if action in presets:
+        lin, ang = presets[action]
+    elif action == "velocity":
+        lin = linear if linear is not None else 0.0
+        ang = angular if angular is not None else 0.0
+    else:
+        console.print(f"[red]Unknown action:[/red] {action}")
+        console.print("Valid actions: forward, backward, left, right, stop, velocity")
+        raise typer.Exit(1)
+
+    try:
+        # First check if we're in motor_test mode
+        status_r = httpx.get("http://localhost:8080/api/status", timeout=2.0)
+        current_behavior = status_r.json().get("current_behavior", "")
+
+        if current_behavior != "motor_test":
+            # Try to switch to motor_test mode
+            switch_r = httpx.post("http://localhost:8080/api/behavior/motor_test", timeout=2.0)
+            if switch_r.status_code != 200:
+                console.print("[yellow]Warning:[/yellow] Could not switch to motor_test mode")
+                console.print("Use 'nimbus behavior motor_test' first, or dashboard 'M' key")
+                raise typer.Exit(1)
+            console.print("[green]Switched to motor_test mode[/green]")
+
+        # Send velocity command
+        r = httpx.post(
+            f"http://localhost:8080/api/motor_test/velocity?linear={lin}&angular={ang}",
+            timeout=2.0
+        )
+
+        if r.status_code == 200:
+            if action == "stop":
+                console.print("[red]Motors stopped[/red]")
+            else:
+                console.print(f"[green]Motor command sent:[/green] linear={lin:.3f}, angular={ang:.3f}")
+        else:
+            console.print(f"[red]Failed:[/red] {r.json().get('detail', 'Unknown error')}")
+            raise typer.Exit(1)
+
+    except httpx.ConnectError:
+        console.print("[red]Error:[/red] Could not connect to Nimbus. Is it running?")
+        console.print("Start with: [cyan]nimbus run --xrce --behavior motor_test[/cyan]")
+        raise typer.Exit(1)
 
 
 @app.command()
