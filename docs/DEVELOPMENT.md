@@ -51,11 +51,18 @@ nimbus/
 │   ├── __init__.py           # Package version
 │   ├── __main__.py           # python -m nimbus entry
 │   ├── core/                 # Core infrastructure
-│   │   ├── node.py           # ROS2 wrapper
+│   │   ├── node.py           # ROS2 wrapper + XRCENode
 │   │   ├── state.py          # State machine, data classes
 │   │   ├── config.py         # Configuration system
 │   │   ├── runner.py         # Main control loop
-│   │   └── agent.py          # Micro-ROS agent management
+│   │   ├── agent.py          # Micro-ROS agent management
+│   │   └── direct/           # XRCE-DDS direct communication
+│   │       ├── __init__.py   # Module exports
+│   │       ├── cdr.py        # CDR serialization
+│   │       ├── messages.py   # ROS2 message types
+│   │       ├── transport.py  # UDP/Serial transports
+│   │       ├── client.py     # High-level XRCE client
+│   │       └── session.py    # Protocol session management
 │   ├── sensors/              # Sensor processing
 │   │   ├── lidar.py          # LIDAR to histogram
 │   │   └── odometry.py       # Pose extraction
@@ -464,6 +471,24 @@ Test without ROS2 or hardware:
 nimbus run --mock --behavior wander
 ```
 
+### Direct Mode
+
+Test direct XRCE-DDS communication without ROS2/Docker:
+
+```bash
+# Direct mode with mock (no hardware needed)
+nimbus run --mock --xrce --behavior wander
+
+# Direct mode over WiFi
+nimbus run --xrce 192.168.1.100 --behavior wander
+
+# Direct mode over serial
+nimbus run --xrce --behavior wander
+
+# With debug logging
+NIMBUS_LOG_LEVEL=DEBUG nimbus run --xrce 192.168.1.100
+```
+
 ### API Debugging
 
 ```bash
@@ -580,6 +605,27 @@ lsof -i :8080
 # Use different port
 NIMBUS_API_PORT=9000 nimbus run
 ```
+
+### Direct Mode Connection Issues
+
+```bash
+# Verify ESP32 is reachable
+ping 192.168.1.100
+
+# Check UDP port isn't blocked
+nc -vzu 192.168.1.100 8090
+
+# Test serial connection
+ls -la /dev/ttyACM* /dev/ttyUSB*
+
+# Run with verbose logging to see XRCE-DDS traffic
+NIMBUS_LOG_LEVEL=DEBUG nimbus run --xrce 192.168.1.100
+```
+
+Common direct mode issues:
+- **Connection timeout**: ESP32 not powered or wrong IP
+- **No data received**: ESP32 still initializing (wait 5-10 seconds)
+- **Serial permission denied**: Add user to `dialout` group
 
 ---
 

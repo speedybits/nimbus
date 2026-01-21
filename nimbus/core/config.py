@@ -86,6 +86,15 @@ class AgentConfig:
 
 
 @dataclass
+class DirectConfig:
+    """Direct XRCE-DDS mode configuration (ROS2-free)."""
+
+    enabled: bool = False       # Enable direct mode by default
+    esp32_ip: str = ""          # ESP32 IP address for WiFi mode (empty = serial)
+    transport: str = "serial"   # "serial" or "udp"
+
+
+@dataclass
 class NimbusConfig:
     """
     Top-level configuration container.
@@ -99,6 +108,7 @@ class NimbusConfig:
     navigation: NavigationConfig = field(default_factory=NavigationConfig)
     api: APIConfig = field(default_factory=APIConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    direct: DirectConfig = field(default_factory=DirectConfig)
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "NimbusConfig":
@@ -146,6 +156,7 @@ class NimbusConfig:
             ("navigation", config.navigation),
             ("api", config.api),
             ("agent", config.agent),
+            ("direct", config.direct),
         ]
 
         for section_name, section_obj in sections:
@@ -186,6 +197,11 @@ class NimbusConfig:
             "NIMBUS_AGENT_IP": ("agent", "agent_ip", str),
             "NIMBUS_AGENT_PORT": ("agent", "agent_port", int),
             "NIMBUS_ROS_DOMAIN_ID": ("agent", "ros_domain_id", int),
+
+            # Direct mode settings
+            "NIMBUS_DIRECT_MODE": ("direct", "enabled", lambda x: x.lower() == "true"),
+            "NIMBUS_DIRECT_ESP32_IP": ("direct", "esp32_ip", str),
+            "NIMBUS_DIRECT_TRANSPORT": ("direct", "transport", str),
         }
 
         for env_var, (section, key, converter) in mappings.items():

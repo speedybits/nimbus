@@ -29,6 +29,10 @@ def run(
     dashboard: bool = typer.Option(True, help="Show live dashboard"),
     config: Optional[Path] = typer.Option(None, help="Path to config file"),
     mock: bool = typer.Option(False, "--mock", help="Use mock node (no ROS2)"),
+    xrce: bool = typer.Option(False, "--xrce", help="Pure Python XRCE mode (no ROS2/Docker required)"),
+    direct: bool = typer.Option(False, "--direct", hidden=True, help="Deprecated alias for --xrce"),
+    discover: bool = typer.Option(False, "--discover", help="Auto-discover ESP32 on network"),
+    verbosity: int = typer.Option(1, "-v", "--verbosity", min=1, max=3, help="Log verbosity: 1=minimal, 2=normal, 3=debug"),
 ):
     """
     Start Nimbus robot controller.
@@ -36,17 +40,60 @@ def run(
     Examples:
         nimbus run --behavior wander
         nimbus run --behavior idle --no-dashboard
+        nimbus run --xrce --behavior wander           # Pure Python XRCE mode
+        nimbus run --xrce --discover --behavior wander  # Auto-discover ESP32
+        nimbus run --xrce -v 3                        # Debug verbosity
     """
+    # Support both --xrce and deprecated --direct
+    xrce = xrce or direct
+
+    # Set log verbosity for XRCE mode
+    if xrce:
+        from nimbus.core.xrce.logger import set_verbosity
+        set_verbosity(verbosity)
+
     from nimbus.core.runner import create_runner
 
+    # Auto-discover ESP32 if requested (informational only in XRCE mode)
+    if discover and xrce:
+        from nimbus.core.network import scan_for_esp32, get_local_subnet
+
+        subnet_info = get_local_subnet()
+        if not subnet_info:
+            console.print("[red]Could not detect local network for auto-discovery.[/red]")
+            raise typer.Exit(1)
+
+        network, prefix_len, _, _ = subnet_info
+        console.print(f"Scanning network [cyan]{network}/{prefix_len}[/cyan] for ESP32...")
+
+        with console.status("[cyan]Discovering devices...") as status:
+            devices = scan_for_esp32(timeout=3.0)
+
+        if not devices:
+            console.print("[yellow]No devices found yet. The ESP32 will connect when it starts.[/yellow]")
+        elif len(devices) == 1:
+            console.print(f"[green]Found potential ESP32:[/green] {devices[0]['ip']}")
+        else:
+            console.print(f"[green]Found {len(devices)} devices on network[/green]")
+            for dev in devices:
+                console.print(f"  - {dev['ip']} ({dev['latency_ms']:.0f}ms)")
+
     # Banner
+    mode_str = "XRCE" if xrce else "ROS2"
     console.print(Panel.fit(
-        "[bold blue]Nimbus[/bold blue] Robot Controller",
+        f"[bold blue]Nimbus[/bold blue] Robot Controller [dim]({mode_str} mode)[/dim]",
         subtitle="Press Ctrl+C to stop"
     ))
 
+    if xrce:
+        console.print("[green]Mode:[/green] Pure Python XRCE Agent (waiting for ESP32)")
+
     # Create runner
-    runner = create_runner(config_path=str(config) if config else None, mock=mock)
+    runner = create_runner(
+        config_path=str(config) if config else None,
+        mock=mock,
+        xrce=xrce,
+    )
 
     # Set initial behavior
     if behavior != "idle":
@@ -55,6 +102,10 @@ def run(
 
     console.print(f"[green]Starting with behavior:[/green] {runner.current_behavior}")
     console.print(f"[green]Available behaviors:[/green] {', '.join(runner.available_behaviors)}")
+
+    # Auto-enable API when dashboard is active (for Claude integration)
+    if dashboard:
+        api = True
 
     # Start API server in background if enabled
     api_thread = None
@@ -308,6 +359,9 @@ def explore(
     dashboard: bool = typer.Option(True, help="Show live dashboard"),
     config: Optional[Path] = typer.Option(None, help="Path to config file"),
     mock: bool = typer.Option(False, "--mock", help="Use mock node (no ROS2)"),
+    xrce: bool = typer.Option(False, "--xrce", help="Pure Python XRCE mode (no ROS2/Docker required)"),
+    direct: bool = typer.Option(False, "--direct", hidden=True, help="Deprecated alias for --xrce"),
+    verbosity: int = typer.Option(1, "-v", "--verbosity", min=1, max=3, help="Log verbosity: 1=minimal, 2=normal, 3=debug"),
 ):
     """
     Start AI-driven exploration with Ollama.
@@ -316,10 +370,20 @@ def explore(
     where to go next based on LIDAR data.
 
     Examples:
-        nimbus explore                      # Use default memory
-        nimbus explore --memory kitchen     # Load/create kitchen memory
-        nimbus explore --new living_room    # Start fresh exploration
+        nimbus explore                              # Use default memory
+        nimbus explore --memory kitchen             # Load/create kitchen memory
+        nimbus explore --new living_room            # Start fresh exploration
+        nimbus explore --xrce                       # Pure Python XRCE mode
+        nimbus explore --xrce -v 3                  # Debug verbosity
     """
+    # Support both --xrce and deprecated --direct
+    xrce = xrce or direct
+
+    # Set log verbosity for XRCE mode
+    if xrce:
+        from nimbus.core.xrce.logger import set_verbosity
+        set_verbosity(verbosity)
+
     from nimbus.core.runner import create_runner
     from nimbus.ai.memory import ExplorationMemory
 
@@ -329,13 +393,18 @@ def explore(
         console.print(f"[yellow]Starting fresh memory:[/yellow] {memory}")
 
     # Banner
+    mode_str = "XRCE" if xrce else "ROS2"
     console.print(Panel.fit(
-        "[bold blue]Nimbus AI Explorer[/bold blue]",
+        f"[bold blue]Nimbus AI Explorer[/bold blue] [dim]({mode_str} mode)[/dim]",
         subtitle="Powered by Ollama | Press Ctrl+C to stop"
     ))
 
     # Create runner
-    runner = create_runner(config_path=str(config) if config else None, mock=mock)
+    runner = create_runner(
+        config_path=str(config) if config else None,
+        mock=mock,
+        xrce=xrce,
+    )
 
     # Check Ollama availability
     from nimbus.ai.ollama import OllamaClient
@@ -792,6 +861,215 @@ def wifi_test(
     else:
         console.print("[yellow]Micro-ROS agent is not running[/yellow]")
         console.print(f"Start it with: [cyan]nimbus agent start --transport wifi[/cyan]")
+
+
+@wifi_app.command("discover")
+def wifi_discover(
+    timeout: float = typer.Option(3.0, "-t", "--timeout", help="Scan timeout per host in seconds"),
+    probe: bool = typer.Option(False, "--probe", "-p", help="Listen for robot traffic (power cycle robot while listening)"),
+):
+    """
+    Discover ESP32 robots on the local network.
+
+    Scans the local subnet for reachable devices by performing a ping sweep.
+    Excludes the gateway and local machine from results.
+
+    Use --probe to listen for XRCE-DDS traffic on port 8090. This requires
+    power cycling the robot while the command is listening, as the robot
+    only sends connection attempts at boot.
+
+    Examples:
+        nimbus wifi discover
+        nimbus wifi discover --timeout 5
+        nimbus wifi discover --probe --timeout 30   # Listen while rebooting robot
+    """
+    from nimbus.core.network import scan_for_esp32, get_local_subnet, listen_for_robot
+
+    # If probe flag is set, listen for robot traffic
+    if probe:
+        import socket
+        import select
+        import time as time_module
+
+        console.print("[cyan]Listening for robot on UDP port 8090...[/cyan]")
+        console.print()
+        console.print("[bold yellow]>>> Power cycle the robot NOW <<<[/bold yellow]")
+        console.print()
+
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("0.0.0.0", 8090))
+            sock.setblocking(False)
+        except OSError as e:
+            if e.errno == 98 or "Address already in use" in str(e):
+                console.print("[red]Port 8090 is already in use.[/red]")
+                console.print("Something else is using this port. Check with:")
+                console.print("  [cyan]sudo lsof -i :8090[/cyan]")
+            else:
+                console.print(f"[red]Could not bind to port 8090:[/red] {e}")
+            raise typer.Exit(1)
+
+        start = time_module.time()
+        robot_ip = None
+        packet_count = 0
+
+        with console.status("") as status:
+            while time_module.time() - start < timeout:
+                remaining = int(timeout - (time_module.time() - start))
+                status.update(f"[cyan]Waiting for packets... {remaining}s remaining[/cyan]")
+
+                readable, _, _ = select.select([sock], [], [], 0.5)
+                if readable:
+                    try:
+                        data, addr = sock.recvfrom(65535)
+                        if len(data) > 4:
+                            robot_ip = addr[0]
+                            packet_count += 1
+                            if packet_count >= 3:
+                                break
+                    except Exception:
+                        pass
+
+        sock.close()
+
+        if robot_ip:
+            console.print(f"\n[bold green]Robot found![/bold green]")
+            console.print(f"  IP Address: [cyan]{robot_ip}[/cyan]")
+            console.print(f"  Packets received: {packet_count}")
+            console.print(f"\nTo connect:")
+            console.print(f"  [cyan]nimbus run --direct --esp32-ip {robot_ip} --behavior wander[/cyan]")
+        else:
+            console.print("\n[yellow]No robot traffic detected.[/yellow]")
+            console.print("\nMake sure to:")
+            console.print("  1. Power cycle the robot AFTER starting this command")
+            console.print("  2. Robot is configured with this computer's IP as agent")
+            console.print("  3. Try longer timeout: nimbus wifi discover --probe --timeout 30")
+        return
+
+    # Get subnet info for display
+    subnet_info = get_local_subnet()
+    if not subnet_info:
+        console.print("[red]Could not detect local network.[/red]")
+        console.print("Ensure you're connected to a network and try again.")
+        raise typer.Exit(1)
+
+    network, prefix_len, gateway, local_ip = subnet_info
+    subnet_str = f"{network}/{prefix_len}"
+
+    console.print(f"Scanning network [cyan]{subnet_str}[/cyan]...")
+    console.print(f"[dim]Local IP: {local_ip}, Gateway: {gateway or 'unknown'}[/dim]\n")
+
+    # Perform scan with spinner
+    with console.status("[cyan]Scanning for devices...") as status:
+        devices = scan_for_esp32(timeout=timeout)
+
+    if not devices:
+        console.print("[yellow]No devices found on the network.[/yellow]")
+        console.print("\nTroubleshooting:")
+        console.print("  1. Ensure the robot is powered on")
+        console.print("  2. Check the robot is on the same WiFi network")
+        console.print("  3. Try increasing timeout: nimbus wifi discover --timeout 5")
+        raise typer.Exit(1)
+
+    # Display results in a table
+    table = Table(title="Discovered Devices")
+    table.add_column("IP Address", style="cyan")
+    table.add_column("Latency", style="green")
+    table.add_column("Status", style="dim")
+
+    for device in devices:
+        latency_str = f"{device['latency_ms']:.0f}ms"
+        table.add_row(device["ip"], latency_str, "Reachable")
+
+    console.print(table)
+
+    # Suggest command based on results
+    console.print()
+    if len(devices) == 1:
+        ip = devices[0]["ip"]
+        console.print(f"Found 1 device. To connect:")
+        console.print(f"  [cyan]nimbus run --direct --esp32-ip {ip} --behavior wander[/cyan]")
+    else:
+        console.print(f"Found {len(devices)} devices. To identify the robot:")
+        console.print(f"  [cyan]nimbus wifi discover --probe[/cyan]")
+        console.print("\nOr specify the ESP32 IP manually:")
+        console.print(f"  [cyan]nimbus run --direct --esp32-ip <IP> --behavior wander[/cyan]")
+
+
+@app.command()
+def motor(
+    action: str = typer.Argument(..., help="Action: forward, backward, left, right, stop, or velocity"),
+    speed: float = typer.Option(0.1, "--speed", "-s", help="Speed for preset actions (m/s or rad/s)"),
+    linear: Optional[float] = typer.Option(None, "--linear", "-l", help="Linear velocity for 'velocity' action"),
+    angular: Optional[float] = typer.Option(None, "--angular", "-a", help="Angular velocity for 'velocity' action"),
+):
+    """
+    Control motors directly (requires nimbus running in motor_test mode).
+
+    Preset actions use --speed for magnitude. The 'velocity' action
+    uses --linear and --angular for direct control.
+
+    Examples:
+        nimbus motor forward --speed 0.15     # Move forward
+        nimbus motor left --speed 0.5         # Turn left
+        nimbus motor stop                     # Stop motors
+        nimbus motor velocity -l 0.1 -a 0.2   # Custom velocity
+    """
+    import httpx
+
+    # Map preset actions to velocities
+    presets = {
+        "forward": (speed, 0.0),
+        "backward": (-speed, 0.0),
+        "left": (0.0, speed),
+        "right": (0.0, -speed),
+        "stop": (0.0, 0.0),
+    }
+
+    if action in presets:
+        lin, ang = presets[action]
+    elif action == "velocity":
+        lin = linear if linear is not None else 0.0
+        ang = angular if angular is not None else 0.0
+    else:
+        console.print(f"[red]Unknown action:[/red] {action}")
+        console.print("Valid actions: forward, backward, left, right, stop, velocity")
+        raise typer.Exit(1)
+
+    try:
+        # First check if we're in motor_test mode
+        status_r = httpx.get("http://localhost:8080/api/status", timeout=2.0)
+        current_behavior = status_r.json().get("current_behavior", "")
+
+        if current_behavior != "motor_test":
+            # Try to switch to motor_test mode
+            switch_r = httpx.post("http://localhost:8080/api/behavior/motor_test", timeout=2.0)
+            if switch_r.status_code != 200:
+                console.print("[yellow]Warning:[/yellow] Could not switch to motor_test mode")
+                console.print("Use 'nimbus behavior motor_test' first, or dashboard 'M' key")
+                raise typer.Exit(1)
+            console.print("[green]Switched to motor_test mode[/green]")
+
+        # Send velocity command
+        r = httpx.post(
+            f"http://localhost:8080/api/motor_test/velocity?linear={lin}&angular={ang}",
+            timeout=2.0
+        )
+
+        if r.status_code == 200:
+            if action == "stop":
+                console.print("[red]Motors stopped[/red]")
+            else:
+                console.print(f"[green]Motor command sent:[/green] linear={lin:.3f}, angular={ang:.3f}")
+        else:
+            console.print(f"[red]Failed:[/red] {r.json().get('detail', 'Unknown error')}")
+            raise typer.Exit(1)
+
+    except httpx.ConnectError:
+        console.print("[red]Error:[/red] Could not connect to Nimbus. Is it running?")
+        console.print("Start with: [cyan]nimbus run --xrce --behavior motor_test[/cyan]")
+        raise typer.Exit(1)
 
 
 @app.command()

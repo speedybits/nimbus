@@ -4,6 +4,10 @@ Live terminal dashboard for Nimbus.
 Uses Rich for beautiful, real-time visualization.
 """
 
+import json
+import time
+from pathlib import Path
+
 from rich.console import Console
 from rich.live import Live
 from rich.layout import Layout
@@ -98,7 +102,7 @@ class LiveDashboard:
     +--------------------------------------+
     |             SHORTCUTS                |
     +--------------------------------------+
-    |              LOG OUTPUT              |
+    |               LOG                    |
     +--------------------------------------+
     """
 
@@ -111,6 +115,7 @@ class LiveDashboard:
         'p': 'patrol',
         'x': 'explore',
         'a': 'ai_explore',
+        'm': 'motor_test',
     }
 
     def __init__(self, runner, console: Console = None):
@@ -123,7 +128,7 @@ class LiveDashboard:
             console=self.console,
             screen=True,
         )
-        self._log = LogBuffer(max_lines=6)
+        self._log = LogBuffer(max_lines=12)  # Unified log buffer
         self._keyboard = KeyboardHandler()
         self._last_state = None
         self._last_behavior = None
@@ -138,7 +143,7 @@ class LiveDashboard:
             Layout(name="top", size=10),
             Layout(name="lidar", size=12),
             Layout(name="shortcuts", size=3),
-            Layout(name="logs", size=8),
+            Layout(name="logs", size=10),  # Unified log panel
         )
 
         layout["top"].split_row(
@@ -158,9 +163,21 @@ class LiveDashboard:
         self._live.__enter__()
         self._keyboard.start()
         self._log.append("[green]Dashboard started[/green]")
+        # Register unified log callback
+        try:
+            from nimbus.core.xrce.logger import set_log_callback
+            set_log_callback(self.log)
+        except ImportError:
+            pass
         return self
 
     def __exit__(self, *args):
+        # Unregister log callback
+        try:
+            from nimbus.core.xrce.logger import set_log_callback
+            set_log_callback(None)
+        except ImportError:
+            pass
         self._keyboard.stop()
         self._live.__exit__(*args)
 
@@ -168,6 +185,19 @@ class LiveDashboard:
         """Update dashboard with current robot context."""
         # Process keyboard input
         self._process_keys()
+
+        # Check if we're still waiting for connection
+        sensors = context.sensors
+        has_data = sensors and (sensors.lidar_ranges or sensors.pose.x != 0 or sensors.pose.y != 0)
+
+        if not has_data and not hasattr(self, '_ever_connected'):
+            # Show waiting message instead of empty panes
+            self._show_waiting_message()
+            self._update_logs()
+            return
+
+        if has_data:
+            self._ever_connected = True
 
         # Track state/behavior changes for logging
         self._log_changes(context)
@@ -178,6 +208,32 @@ class LiveDashboard:
         self._update_lidar(context)
         self._update_shortcuts()
         self._update_logs()
+
+        # Write state for Claude every second
+        now = time.time()
+        if not hasattr(self, '_last_claude_write') or now - self._last_claude_write >= 1.0:
+            self._write_claude_state(context)
+            self._last_claude_write = now
+
+    def _show_waiting_message(self) -> None:
+        """Show waiting for connection message."""
+        waiting_text = Text()
+        waiting_text.append("\n\n")
+        waiting_text.append("⏳ Please wait up to 30 seconds for robot to connect...\n\n", style="bold yellow")
+        waiting_text.append("The ESP32 needs time to establish the XRCE-DDS connection.\n", style="dim")
+        waiting_text.append("If it doesn't connect, try power cycling the robot.", style="dim")
+
+        # Fill all the main panels with the waiting message
+        self._layout["sensors"].update(Panel(waiting_text, title="Connecting...", border_style="yellow"))
+        self._layout["status"].update(Panel(Text("", justify="center"), title="Status", border_style="dim"))
+        self._layout["lidar"].update(Panel(
+            Text("\n\n      Waiting for LIDAR data...", style="dim", justify="center"),
+            title="LIDAR View", border_style="dim"
+        ))
+        self._layout["shortcuts"].update(Panel(
+            Text("[dim]Q: quit[/dim]", justify="center"),
+            title="Shortcuts", border_style="dim"
+        ))
 
     def _update_sensors(self, context) -> None:
         """Update sensors panel."""
@@ -191,8 +247,10 @@ class LiveDashboard:
             table.add_row("Position X:", f"{sensors.pose.x:.3f} m")
             table.add_row("Position Y:", f"{sensors.pose.y:.3f} m")
             table.add_row("Heading:", f"{math.degrees(sensors.pose.theta):.1f} deg")
-            table.add_row("Linear Vel:", f"{sensors.velocity.linear:.2f} m/s")
-            table.add_row("Angular Vel:", f"{sensors.velocity.angular:.2f} rad/s")
+            table.add_row("Odom Vel:", f"{sensors.velocity.linear:.3f} / {sensors.velocity.angular:.3f}")
+            # Show commanded velocity (what we're sending to motors)
+            cmd = context.velocity_cmd
+            table.add_row("Cmd Vel:", Text(f"{cmd.linear:.3f} / {cmd.angular:.3f}", style="yellow"))
             table.add_row("Closest:", f"{sensors.closest_obstacle:.2f} m")
         else:
             table.add_row("Status:", "No sensor data")
@@ -239,6 +297,11 @@ class LiveDashboard:
             table.add_row("Safety:", Text("CAUTION", style="yellow"))
         else:
             table.add_row("Safety:", Text("OK", style="green"))
+
+        # Show wander speed settings
+        wander = self.runner._behavior_manager.get_behavior("wander")
+        if wander and hasattr(wander, 'forward_speed'):
+            table.add_row("Set Speed:", f"fwd={wander.forward_speed:.3f} turn={wander.turn_speed:.3f}")
 
         # Show exploration progress if in explore mode
         if behavior == "explore":
@@ -381,6 +444,9 @@ class LiveDashboard:
             if key is None:
                 break
 
+            # Debug: log all key presses
+            self._log.append(f"[dim]Key: {repr(key)}[/dim]")
+
             # Handle quit
             if key.lower() == 'q':
                 self._log.append("[yellow]Quit requested[/yellow]")
@@ -399,6 +465,56 @@ class LiveDashboard:
             elif key.lower() == 'e':
                 self.runner.emergency_stop()
                 self._log.append("[bold red]EMERGENCY STOP[/bold red]")
+
+            # Handle speed adjustment
+            elif key in ('+', '='):
+                self._adjust_wander_speed(1.5)  # Increase 50%
+            elif key == '-':
+                self._adjust_wander_speed(0.67)  # Decrease ~33%
+
+            # Handle motor test controls (when in motor_test mode)
+            elif self.runner.current_behavior == 'motor_test':
+                self._handle_motor_test_key(key)
+
+    def _adjust_wander_speed(self, factor: float) -> None:
+        """Adjust wander behavior speed by factor."""
+        # Try to get the wander behavior
+        try:
+            wander = self.runner._behavior_manager.get_behavior("wander")
+            if wander and hasattr(wander, 'adjust_speed'):
+                fwd, turn = wander.adjust_speed(factor)
+                self._log.append(f"[cyan]Speed: fwd={fwd:.3f} turn={turn:.3f}[/cyan]")
+            else:
+                avail = list(self.runner._behavior_manager._behaviors.keys())
+                self._log.append(f"[yellow]No wander behavior. Available: {avail}[/yellow]")
+        except Exception as e:
+            self._log.append(f"[red]Speed error: {e}[/red]")
+
+    def _handle_motor_test_key(self, key: str) -> None:
+        """Handle motor test control keys."""
+        try:
+            motor_test = self.runner._behavior_manager.get_behavior("motor_test")
+            if not motor_test:
+                return
+
+            # Direction controls: 8/k=fwd, 2/j=back, 4/h=left, 6/l=right, 5/space/0=stop
+            if key in ('8', 'k'):
+                lin, ang = motor_test.forward()
+                self._log.append(f"[green]FORWARD[/green] lin={lin:.2f} ang={ang:.2f}")
+            elif key in ('2', 'j'):
+                lin, ang = motor_test.backward()
+                self._log.append(f"[yellow]BACKWARD[/yellow] lin={lin:.2f} ang={ang:.2f}")
+            elif key in ('4', 'h'):
+                lin, ang = motor_test.left()
+                self._log.append(f"[cyan]LEFT[/cyan] lin={lin:.2f} ang={ang:.2f}")
+            elif key in ('6', 'l'):
+                lin, ang = motor_test.right()
+                self._log.append(f"[magenta]RIGHT[/magenta] lin={lin:.2f} ang={ang:.2f}")
+            elif key in ('5', ' ', '0'):
+                lin, ang = motor_test.stop_motion()
+                self._log.append(f"[red]STOP[/red] lin={lin:.2f} ang={ang:.2f}")
+        except Exception as e:
+            self._log.append(f"[red]Motor test error: {e}[/red]")
 
     def _log_changes(self, context) -> None:
         """Log state and behavior changes."""
@@ -433,25 +549,89 @@ class LiveDashboard:
         """Update shortcuts panel showing available key bindings."""
         current = self.runner.current_behavior or ""
 
-        # Build shortcuts display with clear key indicators
-        shortcuts = []
-        for key, behavior in self.KEY_MAPPINGS.items():
-            if behavior == current:
-                shortcuts.append(f"[bold cyan]{key.upper()}:{behavior}[/bold cyan]")
-            else:
-                shortcuts.append(f"[white]{key.upper()}[/white]:[dim]{behavior}[/dim]")
+        # Show motor test controls when in motor_test mode
+        if current == "motor_test":
+            shortcuts = [
+                "[bold cyan]M:motor_test[/bold cyan]",
+                "[white]8/K[/white]:[dim]fwd[/dim]",
+                "[white]2/J[/white]:[dim]back[/dim]",
+                "[white]4/H[/white]:[dim]left[/dim]",
+                "[white]6/L[/white]:[dim]right[/dim]",
+                "[white]5/SPACE[/white]:[dim]stop[/dim]",
+                "[white]I[/white]:[dim]idle[/dim]",
+                "[white]E[/white]:[dim]emergency[/dim]",
+                "[white]Q[/white]:[dim]quit[/dim]",
+            ]
+        else:
+            # Build shortcuts display with clear key indicators
+            shortcuts = []
+            for key, behavior in self.KEY_MAPPINGS.items():
+                if behavior == current:
+                    shortcuts.append(f"[bold cyan]{key.upper()}:{behavior}[/bold cyan]")
+                else:
+                    shortcuts.append(f"[white]{key.upper()}[/white]:[dim]{behavior}[/dim]")
 
-        shortcuts.append("[white]E[/white]:[dim]emergency[/dim]")
-        shortcuts.append("[white]Q[/white]:[dim]quit[/dim]")
+            shortcuts.append("[white]+/-[/white]:[dim]speed[/dim]")
+            shortcuts.append("[white]E[/white]:[dim]emergency[/dim]")
+            shortcuts.append("[white]Q[/white]:[dim]quit[/dim]")
 
         text = Text.from_markup("  ".join(shortcuts))
         self._layout["shortcuts"].update(Panel(text, title="Shortcuts", border_style="magenta"))
 
     def _update_logs(self) -> None:
-        """Update log output panel."""
+        """Update unified log panel with verbosity indicator."""
+        from nimbus.core.xrce.logger import get_log_file_path, get_verbosity
+
+        verbosity = get_verbosity()
+        verbosity_names = {1: "minimal", 2: "normal", 3: "debug"}
+        verbosity_name = verbosity_names.get(verbosity, "normal")
+
         text = Text.from_markup(self._log.get_text())
-        self._layout["logs"].update(Panel(text, title="Log", border_style="yellow"))
+        log_path = get_log_file_path()
+        self._layout["logs"].update(Panel(
+            text,
+            title=f"Log [dim](-v {verbosity}: {verbosity_name})[/dim]",
+            subtitle=f"[dim]{log_path}[/dim]",
+            border_style="yellow"
+        ))
 
     def log(self, message: str) -> None:
         """Add a message to the log buffer (public API)."""
         self._log.append(message)
+
+    def _write_claude_state(self, context) -> None:
+        """Write state for Claude Code to read."""
+        sensors = context.sensors
+        state = {
+            "timestamp": datetime.now().isoformat(),
+            "robot": {
+                "state": context.state.name,
+                "behavior": context.current_behavior,
+                "pose": {
+                    "x": round(sensors.pose.x, 3),
+                    "y": round(sensors.pose.y, 3),
+                    "theta": round(sensors.pose.theta, 3)
+                } if sensors else None,
+                "velocity": {
+                    "linear": round(sensors.velocity.linear, 3),
+                    "angular": round(sensors.velocity.angular, 3)
+                } if sensors else None,
+                "closest_obstacle": round(sensors.closest_obstacle, 3) if sensors and sensors.closest_obstacle else None,
+                "target": {
+                    "x": context.target.x,
+                    "y": context.target.y,
+                    "theta": context.target.theta
+                } if context.target else None
+            },
+            "logs": list(self._log.lines)[-20:],
+            "available_behaviors": list(self.runner.available_behaviors),
+            "api_port": 8080
+        }
+
+        state_path = Path.home() / ".nimbus" / "claude_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Atomic write to prevent partial reads
+        tmp_path = state_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(state, indent=2))
+        tmp_path.rename(state_path)

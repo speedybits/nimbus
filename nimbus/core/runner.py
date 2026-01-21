@@ -17,7 +17,7 @@ import threading
 import time
 import numpy as np
 
-from .node import NimbusNode, MockNimbusNode
+from .node import NimbusNode, MockNimbusNode, XRCENode
 from .state import RobotContext, RobotState, Pose2D, Velocity, SensorSnapshot
 from .config import NimbusConfig
 from nimbus.sensors.lidar import LidarProcessor
@@ -29,6 +29,8 @@ from nimbus.behaviors.wander import WanderBehavior, SimpleWanderBehavior
 from nimbus.behaviors.goto import GoToBehavior, PatrolBehavior
 from nimbus.behaviors.ai_explore import AIExploreBehavior
 from nimbus.behaviors.explore import ExploreBehavior
+from nimbus.behaviors.pet import PetBehavior
+from nimbus.behaviors.motor_test import MotorTestBehavior
 
 
 class NimbusRunner:
@@ -54,9 +56,12 @@ class NimbusRunner:
         self,
         config: Optional[NimbusConfig] = None,
         mock: bool = False,  # Use mock node for testing
+        xrce: bool = False,  # Use pure Python XRCE agent (no ROS2/Docker)
+        direct: bool = False,  # Deprecated alias for xrce
     ):
         self.config = config or NimbusConfig.load()
         self._mock = mock
+        self._xrce = xrce or direct  # Support both for backwards compatibility
 
         # Core components
         self._node: Optional[NimbusNode] = None
@@ -105,6 +110,8 @@ class NimbusRunner:
             turn_speed=self.config.navigation.max_angular_speed * 0.5,
         ))
         self._behavior_manager.register(AIExploreBehavior())
+        self._behavior_manager.register(PetBehavior())
+        self._behavior_manager.register(MotorTestBehavior())
 
     def _setup_signal_handlers(self) -> None:
         """Setup SIGINT/SIGTERM handlers for graceful shutdown."""
@@ -116,26 +123,32 @@ class NimbusRunner:
 
     def start(self) -> None:
         """
-        Initialize ROS2 connections and start processing.
+        Initialize connections and start processing.
 
         Call this before run() if you want to do setup before blocking.
         """
         if self._running:
             return
 
-        # Create node
+        # Create node based on mode
         if self._mock:
             self._node = MockNimbusNode("nimbus")
+        elif self._xrce:
+            # XRCE mode - use pure Python XRCE agent (no ROS2/Docker)
+            self._node = XRCENode(
+                name="nimbus_xrce",
+                port=self.config.agent.agent_port,
+            )
         else:
+            # Standard ROS2 mode
             self._node = NimbusNode("nimbus")
 
         self._node.start()
 
         # Subscribe to topics
-        try:
-            from sensor_msgs.msg import LaserScan
-            from nav_msgs.msg import Odometry
-            from geometry_msgs.msg import Twist
+        if self._xrce:
+            # XRCE mode - use built-in message types
+            from nimbus.core.xrce.messages import LaserScan, Odometry, Twist
 
             self._scan_buffer = self._node.subscribe(
                 self.config.sensors.lidar_topic,
@@ -150,11 +163,31 @@ class NimbusRunner:
             )
 
             self._cmd_publisher = self._node.publisher("/cmd_vel", Twist)
+        else:
+            # ROS2 mode
+            try:
+                from sensor_msgs.msg import LaserScan
+                from nav_msgs.msg import Odometry
+                from geometry_msgs.msg import Twist
 
-        except ImportError:
-            # Running without ROS2 - use mock
-            self._scan_buffer = self._node.subscribe("/scan", object, buffer_size=1)
-            self._odom_buffer = self._node.subscribe("/odom_raw", object, buffer_size=1)
+                self._scan_buffer = self._node.subscribe(
+                    self.config.sensors.lidar_topic,
+                    LaserScan,
+                    buffer_size=1
+                )
+
+                self._odom_buffer = self._node.subscribe(
+                    self.config.sensors.odom_topic,
+                    Odometry,
+                    buffer_size=1
+                )
+
+                self._cmd_publisher = self._node.publisher("/cmd_vel", Twist)
+
+            except ImportError:
+                # Running without ROS2 - use mock
+                self._scan_buffer = self._node.subscribe("/scan", object, buffer_size=1)
+                self._odom_buffer = self._node.subscribe("/odom_raw", object, buffer_size=1)
 
         self._running = True
         self._shutdown_event.clear()
@@ -194,8 +227,8 @@ class NimbusRunner:
             if sleep_time > 0:
                 self._shutdown_event.wait(timeout=sleep_time)
 
-        # Cleanup
-        self._send_stop()
+        # Cleanup - send multiple stop commands for reliability
+        self._reliable_stop(attempts=5, delay=0.05)
         if self._node:
             self._node.shutdown()
 
@@ -207,20 +240,28 @@ class NimbusRunner:
         # Get velocity from behavior
         velocity = self._behavior_manager.compute(self._context)
 
-        # Apply safety filtering (only for obstacles in forward arc)
-        closest = self._context.sensors.closest_obstacle if self._context.sensors else float('inf')
-        obstacle_angle = self._context.sensors.obstacle_direction if self._context.sensors else 0.0
-        safe_linear, safe_angular = self._safety.limit_velocity(
-            velocity.linear, velocity.angular, closest, obstacle_angle
-        )
+        # Check if current behavior wants to bypass safety
+        current_behavior = self._behavior_manager.get_behavior(self._behavior_manager.active_behavior)
+        bypass_safety = getattr(current_behavior, 'bypass_safety', False) if current_behavior else False
 
-        # Smooth velocity
-        smooth_linear, smooth_angular = self._smoother.smooth(safe_linear, safe_angular)
+        if bypass_safety:
+            # Motor test mode - skip safety filtering entirely
+            smooth_linear, smooth_angular = self._smoother.smooth(velocity.linear, velocity.angular)
+        else:
+            # Apply safety filtering (only for obstacles in forward arc)
+            closest = self._context.sensors.closest_obstacle if self._context.sensors else float('inf')
+            obstacle_angle = self._context.sensors.obstacle_direction if self._context.sensors else 0.0
+            safe_linear, safe_angular = self._safety.limit_velocity(
+                velocity.linear, velocity.angular, closest, obstacle_angle
+            )
 
-        # Update state based on safety
-        if self._safety.is_emergency:
-            self._context.set_state(RobotState.EMERGENCY_STOP)
-            self._smoother.reset()
+            # Smooth velocity
+            smooth_linear, smooth_angular = self._smoother.smooth(safe_linear, safe_angular)
+
+            # Update state based on safety
+            if self._safety.is_emergency:
+                self._context.set_state(RobotState.EMERGENCY_STOP)
+                self._smoother.reset()
 
         # Store command
         self._context.set_velocity_cmd(Velocity(smooth_linear, smooth_angular))
@@ -273,12 +314,23 @@ class NimbusRunner:
         """Send stop command."""
         self._send_velocity(0.0, 0.0)
 
+    def _reliable_stop(self, attempts: int = 5, delay: float = 0.05) -> None:
+        """
+        Send multiple stop commands to ensure motors stop.
+
+        UDP is unreliable, so we send several stop commands with delays.
+        """
+        for i in range(attempts):
+            self._send_velocity(0.0, 0.0)
+            if i < attempts - 1:
+                time.sleep(delay)
+
     def stop(self) -> None:
         """Request graceful shutdown."""
         self._running = False
         self._shutdown_event.set()
-        # Immediately send stop command for safety
-        self._send_stop()
+        # Immediately send multiple stop commands for safety (UDP is unreliable)
+        self._reliable_stop(attempts=3, delay=0.03)
         self._smoother.reset()
 
     # --- Public API ---
@@ -418,7 +470,9 @@ class NimbusRunner:
 
 def create_runner(
     config_path: Optional[str] = None,
-    mock: bool = False
+    mock: bool = False,
+    xrce: bool = False,
+    direct: bool = False,  # Deprecated alias for xrce
 ) -> NimbusRunner:
     """
     Factory function to create a configured runner.
@@ -426,6 +480,8 @@ def create_runner(
     Args:
         config_path: Optional path to config file
         mock: Use mock node for testing
+        xrce: Use pure Python XRCE agent (no ROS2/Docker required)
+        direct: Deprecated alias for xrce (backwards compatibility)
 
     Returns:
         Configured NimbusRunner
@@ -433,4 +489,4 @@ def create_runner(
     from pathlib import Path
 
     config = NimbusConfig.load(Path(config_path) if config_path else None)
-    return NimbusRunner(config=config, mock=mock)
+    return NimbusRunner(config=config, mock=mock, xrce=xrce or direct)

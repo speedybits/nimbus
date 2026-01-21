@@ -55,11 +55,41 @@ nimbus stop
 
 ## API Endpoints
 
+**API runs on port 8080** (not 8000).
+
+Core endpoints:
 - `GET /api/status` - Robot state
 - `GET /api/sensors` - Sensor readings
 - `POST /api/navigate` - Send goal
 - `POST /api/stop` - Emergency stop
 - `WS /ws/telemetry` - Real-time data stream
+
+Motor control endpoints:
+- `POST /api/motor_test/velocity?linear=0.1&angular=0` - Set velocity (requires motor_test mode)
+- `GET /api/motor_test/velocity` - Get current velocity setting
+- `POST /api/behavior/motor_test` - Switch to motor_test mode
+
+## Motor Control
+
+Direct motor control via CLI (requires nimbus running):
+
+```bash
+# Quick commands
+nimbus motor forward --speed 0.1    # Move forward
+nimbus motor backward --speed 0.1   # Move backward
+nimbus motor left --speed 0.5       # Turn left
+nimbus motor right --speed 0.5      # Turn right
+nimbus motor stop                   # Stop motors
+
+# Custom velocity
+nimbus motor velocity -l 0.1 -a 0.2  # linear + angular
+```
+
+Via API:
+```bash
+curl -X POST "http://localhost:8080/api/behavior/motor_test"
+curl -X POST "http://localhost:8080/api/motor_test/velocity?linear=0.1&angular=0"
+```
 
 ## Testing
 
@@ -77,9 +107,24 @@ nimbus test --regression
 pytest --cov=nimbus nimbus/tests/
 ```
 
+## Robot Documentation
+
+The ESP32/robot hardware documentation is located at `/home/mike/projects/b4m_yahboom/doc_txt`
+
+## Robot Connection
+
+**IMPORTANT:** When the ESP32 is not connecting to the XRCE agent, ALWAYS ask the user to reboot/power cycle the robot. Do not wait or retry silently - immediately ask for a reboot.
+
+**NOTE:** The WiFi is always correctly configured. NEVER suggest re-running WiFi setup - it is not needed.
+
+**NOTE:** The ESP32 firmware is correct and subscribes to `/cmd_vel`. If the agent reports "ESP32 not subscribed to /cmd_vel", the bug is in the Nimbus XRCE agent code, not the firmware.
+
+**TIP:** To check if the robot is physically moving, monitor the pose data in `~/.nimbus/claude_state.json` - if x, y, theta values are changing, the robot is moving.
+
 ## Never Do
 
 - Never store secrets in files - use environment variables
 - Never commit runtime data files
 - Never bypass the safety controller
 - Never block the main control loop
+- **NEVER launch `nimbus run` if an instance is already running.** Always check first with `ps aux | grep nimbus | grep -v grep`. Only ONE nimbus instance can run at a time (they compete for the UDP port). If the user already has nimbus running, debug their existing session instead of starting a new one.

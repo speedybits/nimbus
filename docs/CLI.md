@@ -62,6 +62,8 @@ nimbus run [OPTIONS]
 | `--dashboard / --no-dashboard` | `--dashboard` | Show live terminal dashboard |
 | `--config PATH` | None | Path to custom config file |
 | `--mock` | False | Use mock node (no ROS2 required) |
+| `--xrce` | False | Use pure Python XRCE mode (no ROS2/Docker required) |
+| `--discover` | False | Auto-discover ESP32 IP on network (use with `--xrce`) |
 
 ### Examples
 
@@ -80,6 +82,12 @@ nimbus run --mock --behavior wander
 
 # Use custom config
 nimbus run --config /path/to/config.yaml
+
+# XRCE mode (no ROS2/Docker needed)
+nimbus run --xrce --behavior wander
+
+# XRCE mode with auto-discover
+nimbus run --xrce --discover --behavior wander
 ```
 
 ### Live Dashboard
@@ -556,6 +564,83 @@ Start it with: nimbus agent start --transport wifi
 
 ---
 
+### nimbus wifi discover
+
+Scan the local network to find ESP32 robots. This eliminates the need to manually find IP addresses.
+
+```bash
+nimbus wifi discover [OPTIONS]
+```
+
+#### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--timeout, -t FLOAT` | `3.0` | Scan timeout per host in seconds |
+
+#### Examples
+
+```bash
+# Basic discovery
+nimbus wifi discover
+
+# With longer timeout for slower networks
+nimbus wifi discover --timeout 5
+```
+
+#### Output (Single Device Found)
+
+```
+Scanning network 172.20.10.0/28...
+Local IP: 172.20.10.2, Gateway: 172.20.10.1
+
+╭─────────── Discovered Devices ───────────╮
+│ IP Address      │ Latency   │ Status     │
+├─────────────────┼───────────┼────────────┤
+│ 172.20.10.9     │ 14ms      │ Reachable  │
+╰──────────────────────────────────────────╯
+
+Found 1 device. To connect:
+  nimbus run --xrce --behavior wander
+```
+
+#### Output (Multiple Devices Found)
+
+```
+Scanning network 192.168.1.0/24...
+Local IP: 192.168.1.100, Gateway: 192.168.1.1
+
+╭─────────── Discovered Devices ───────────╮
+│ IP Address      │ Latency   │ Status     │
+├─────────────────┼───────────┼────────────┤
+│ 192.168.1.50    │ 8ms       │ Reachable  │
+│ 192.168.1.75    │ 12ms      │ Reachable  │
+│ 192.168.1.120   │ 45ms      │ Reachable  │
+╰──────────────────────────────────────────╯
+
+Found 3 devices. To connect:
+  nimbus run --xrce --behavior wander
+
+Or use auto-discovery:
+  nimbus run --xrce --discover --behavior wander
+```
+
+#### Output (No Devices Found)
+
+```
+Scanning network 192.168.1.0/24...
+Local IP: 192.168.1.100, Gateway: 192.168.1.1
+
+No devices found on the network.
+
+Troubleshooting:
+  1. Ensure the robot is powered on
+  2. Check the robot is on the same WiFi network
+  3. Try increasing timeout: nimbus wifi discover --timeout 5
+```
+
+---
+
 ## Shell Completion
 
 Nimbus supports shell completion for bash, zsh, and fish.
@@ -599,6 +684,7 @@ These environment variables affect CLI behavior:
 | `NIMBUS_AGENT_IP` | Agent IP for WiFi mode (default: auto-detect) |
 | `NIMBUS_AGENT_PORT` | UDP port for WiFi mode (default: 8090) |
 | `NIMBUS_ROS_DOMAIN_ID` | ROS2 domain ID (default: 20) |
+| `NIMBUS_XRCE_MODE` | Enable XRCE mode by default (default: false) |
 
 ---
 
@@ -650,3 +736,41 @@ nimbus run --no-dashboard
 ```
 
 Or check terminal size (minimum 80x24 recommended).
+
+### Direct mode: "Connection refused" or timeout
+
+1. Verify ESP32 is powered on and connected to WiFi
+2. Check ESP32 IP address is correct:
+```bash
+# Ping the ESP32
+ping 192.168.1.100
+```
+3. Ensure ESP32 firmware supports XRCE-DDS (Micro-ROS client)
+4. Check firewall isn't blocking UDP port 8090
+
+### Direct mode: "No data received"
+
+The ESP32 may not be publishing topics yet:
+```bash
+# Try with verbose logging
+NIMBUS_LOG_LEVEL=DEBUG nimbus run --xrce 192.168.1.100
+```
+
+Common causes:
+- ESP32 still initializing (wait 5-10 seconds after power-on)
+- Wrong transport mode on ESP32 (should be WiFi/UDP)
+- Network issues between PC and ESP32
+
+### Direct mode: Serial connection issues
+
+```bash
+# Check serial port exists
+ls -la /dev/ttyACM* /dev/ttyUSB*
+
+# Verify permissions
+sudo usermod -aG dialout $USER
+# Log out and back in
+
+# Try explicit port
+NIMBUS_AGENT_DEVICE=/dev/ttyUSB0 nimbus run --xrce
+```
