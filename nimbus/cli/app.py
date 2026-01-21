@@ -32,7 +32,7 @@ def run(
     xrce: bool = typer.Option(False, "--xrce", help="Pure Python XRCE mode (no ROS2/Docker required)"),
     direct: bool = typer.Option(False, "--direct", hidden=True, help="Deprecated alias for --xrce"),
     discover: bool = typer.Option(False, "--discover", help="Auto-discover ESP32 on network"),
-    verbosity: int = typer.Option(2, "-v", "--verbosity", min=1, max=3, help="Log verbosity: 1=minimal, 2=normal, 3=debug"),
+    verbosity: int = typer.Option(1, "-v", "--verbosity", min=1, max=3, help="Log verbosity: 1=minimal, 2=normal, 3=debug"),
 ):
     """
     Start Nimbus robot controller.
@@ -361,7 +361,7 @@ def explore(
     mock: bool = typer.Option(False, "--mock", help="Use mock node (no ROS2)"),
     xrce: bool = typer.Option(False, "--xrce", help="Pure Python XRCE mode (no ROS2/Docker required)"),
     direct: bool = typer.Option(False, "--direct", hidden=True, help="Deprecated alias for --xrce"),
-    verbosity: int = typer.Option(2, "-v", "--verbosity", min=1, max=3, help="Log verbosity: 1=minimal, 2=normal, 3=debug"),
+    verbosity: int = typer.Option(1, "-v", "--verbosity", min=1, max=3, help="Log verbosity: 1=minimal, 2=normal, 3=debug"),
 ):
     """
     Start AI-driven exploration with Ollama.

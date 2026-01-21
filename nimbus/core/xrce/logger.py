@@ -30,8 +30,8 @@ class LogLevel(IntEnum):
     DEBUG = 3     # All protocol details (packets, parsing)
 
 
-# Global verbosity setting (default: NORMAL)
-_verbosity: LogLevel = LogLevel.NORMAL
+# Global verbosity setting (default: CRITICAL for minimal output)
+_verbosity: LogLevel = LogLevel.CRITICAL
 
 
 def get_verbosity() -> LogLevel:
