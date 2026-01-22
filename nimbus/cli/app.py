@@ -502,9 +502,11 @@ def wifi_setup(
     password: Optional[str] = typer.Option(None, "--password", "-p", help="WiFi password"),
     port: Optional[str] = typer.Option(None, "--port", help="Serial port (auto-detect if not specified)"),
     agent_ip: Optional[str] = typer.Option(None, "--agent-ip", help="Agent IP (auto-detect if not specified)"),
+    agent_hostname: Optional[str] = typer.Option(None, "--agent-hostname", help="Agent hostname (e.g., myhost.local)"),
     agent_port: int = typer.Option(8090, "--agent-port", help="Agent UDP port"),
     domain_id: int = typer.Option(20, "--domain-id", help="ROS2 domain ID"),
     no_reboot: bool = typer.Option(False, "--no-reboot", help="Don't reboot after configuration"),
+    skip_dialout_check: bool = typer.Option(False, "--skip-dialout-check", help="Skip dialout group check"),
 ):
     """
     Configure WiFi on Yahboom robot via USB.
@@ -515,100 +517,259 @@ def wifi_setup(
     Examples:
         nimbus wifi setup
         nimbus wifi setup --ssid MyNetwork --agent-ip 192.168.1.100
+        nimbus wifi setup --agent-hostname mycomputer.local
     """
-    from nimbus.core.network import find_serial_ports, get_local_ip
+    from nimbus.core.network import (
+        find_serial_ports, get_local_ip, check_dialout_group,
+        find_serial_ports_delta, resolve_hostname, validate_ip_address
+    )
     from nimbus.core.robot_config import (
         RobotConfigurator, WiFiCredentials, UDPAgentConfig, TRANSPORT_WIFI_UDP
     )
+    import socket
 
     console.print(Panel.fit(
         "[bold blue]Nimbus WiFi Setup Wizard[/bold blue]",
         subtitle="Configure robot for wireless operation"
     ))
 
-    # Step 1: Find serial port
-    console.print("\n[bold]Step 1:[/bold] Serial Connection")
+    # =========================================================================
+    # Step 1: Prerequisites Check
+    # =========================================================================
+    console.print("\n[bold cyan]Step 1/6:[/bold cyan] Prerequisites Check")
+
+    if not skip_dialout_check:
+        in_dialout, username = check_dialout_group()
+        if in_dialout:
+            console.print(f"[green]✓[/green] User '{username}' is in dialout group")
+        else:
+            console.print(f"[yellow]⚠[/yellow] User '{username}' is NOT in dialout group")
+            console.print("  Serial port access may fail without dialout membership.")
+            console.print(f"  To fix: [cyan]sudo usermod -aG dialout {username}[/cyan]")
+            console.print("  Then log out and back in for changes to take effect.")
+            if not typer.confirm("Continue anyway?", default=True):
+                raise typer.Exit(1)
+    else:
+        console.print("[dim]Dialout group check skipped[/dim]")
+
+    # =========================================================================
+    # Step 2: USB Connection with Delta Detection
+    # =========================================================================
+    console.print("\n[bold cyan]Step 2/6:[/bold cyan] USB Connection")
 
     if port:
         selected_port = port
+        console.print(f"[green]Using specified port:[/green] {selected_port}")
     else:
-        ports = find_serial_ports()
-        if not ports:
+        # Capture ports BEFORE connecting
+        ports_before = find_serial_ports()
+        if ports_before:
+            console.print(f"[dim]Existing serial ports: {', '.join(ports_before)}[/dim]")
+        else:
+            console.print("[dim]No existing serial ports detected[/dim]")
+
+        console.print("\n[yellow]→[/yellow] Connect the robot via USB cable now...")
+        typer.prompt("Press Enter when connected", default="", show_default=False)
+
+        # Capture ports AFTER connecting
+        new_ports, all_ports = find_serial_ports_delta(ports_before)
+
+        if not all_ports:
             console.print("[red]No serial devices found.[/red]")
-            console.print("Please connect the robot via USB and try again.")
+            console.print("\nTroubleshooting:")
+            console.print("  - Check USB cable is firmly connected")
+            console.print("  - Ensure robot is powered on")
+            console.print("  - Try a different USB port")
+            if not skip_dialout_check:
+                in_dialout, username = check_dialout_group()
+                if not in_dialout:
+                    console.print(f"  - Add user to dialout group: sudo usermod -aG dialout {username}")
             raise typer.Exit(1)
 
-        console.print(f"Found serial ports: {', '.join(ports)}")
-        if len(ports) == 1:
-            selected_port = ports[0]
+        if new_ports:
+            console.print(f"[green]✓[/green] New device detected: [bold]{', '.join(new_ports)}[/bold]")
+            selected_port = new_ports[0]
+        elif len(all_ports) == 1:
+            selected_port = all_ports[0]
             console.print(f"[green]Using:[/green] {selected_port}")
         else:
-            selected_port = typer.prompt("Select port", default=ports[0])
+            console.print(f"Available ports: {', '.join(all_ports)}")
+            selected_port = typer.prompt("Select port", default=all_ports[0])
 
-    # Step 2: Get WiFi credentials
-    console.print("\n[bold]Step 2:[/bold] WiFi Credentials")
+    console.print(f"[green]Selected port:[/green] {selected_port}")
+
+    # =========================================================================
+    # Step 3: WiFi Credentials with Validation
+    # =========================================================================
+    console.print("\n[bold cyan]Step 3/6:[/bold cyan] WiFi Credentials")
 
     if not ssid:
-        ssid = typer.prompt("WiFi network name (SSID)")
+        while True:
+            ssid = typer.prompt("WiFi network name (SSID)")
+            if len(ssid) > 32:
+                console.print("[red]SSID too long (max 32 characters)[/red]")
+                continue
+            if len(ssid) == 0:
+                console.print("[red]SSID cannot be empty[/red]")
+                continue
+            break
+
     if not password:
         password = typer.prompt("WiFi password", hide_input=True)
+        if len(password) < 8:
+            console.print("[yellow]⚠[/yellow] Password is less than 8 characters")
+            console.print("  Most WPA2 networks require 8+ character passwords.")
+            if not typer.confirm("Continue with this password?", default=True):
+                password = typer.prompt("WiFi password", hide_input=True)
 
     console.print(f"[green]Network:[/green] {ssid}")
+    console.print(f"[green]Password:[/green] {'*' * len(password)}")
 
-    # Step 3: Get agent address
-    console.print("\n[bold]Step 3:[/bold] Agent Configuration")
+    # =========================================================================
+    # Step 4: Agent Connection Method
+    # =========================================================================
+    console.print("\n[bold cyan]Step 4/6:[/bold cyan] Agent Configuration")
 
-    if not agent_ip:
+    resolved_ip = None
+
+    if agent_hostname:
+        # User provided hostname via CLI
+        console.print(f"Using hostname: {agent_hostname}")
+        try:
+            resolved_ip = resolve_hostname(agent_hostname)
+            console.print(f"[green]✓[/green] Resolved to: {resolved_ip}")
+        except ValueError as e:
+            console.print(f"[red]Cannot resolve hostname:[/red] {e}")
+            raise typer.Exit(1)
+    elif agent_ip:
+        # User provided IP via CLI
+        if not validate_ip_address(agent_ip):
+            console.print(f"[red]Invalid IP address format:[/red] {agent_ip}")
+            raise typer.Exit(1)
+        resolved_ip = agent_ip
+    else:
+        # Interactive selection
         detected_ip = get_local_ip()
-        use_detected = typer.confirm(f"Use detected IP address ({detected_ip})?", default=True)
-        if use_detected:
-            agent_ip = detected_ip
-        else:
-            agent_ip = typer.prompt("Enter agent IP address")
+        local_hostname = socket.gethostname()
 
-    console.print(f"[green]Agent IP:[/green] {agent_ip}")
+        console.print("How should the robot connect to this computer?")
+        console.print(f"  [cyan]1)[/cyan] mDNS hostname: [bold]{local_hostname}.local[/bold] (recommended)")
+        console.print(f"  [cyan]2)[/cyan] Fixed IP address: [bold]{detected_ip}[/bold]")
+        console.print(f"  [cyan]3)[/cyan] Custom address")
+
+        choice = typer.prompt("Select option", default="1")
+
+        if choice == "1":
+            hostname = f"{local_hostname}.local"
+            console.print(f"Using mDNS hostname: {hostname}")
+            try:
+                resolved_ip = resolve_hostname(hostname)
+                console.print(f"[green]✓[/green] Resolved to: {resolved_ip}")
+            except ValueError as e:
+                console.print(f"[yellow]⚠[/yellow] Could not resolve mDNS hostname: {e}")
+                console.print("Using detected IP address instead.")
+                resolved_ip = detected_ip
+        elif choice == "2":
+            resolved_ip = detected_ip
+        else:
+            custom_addr = typer.prompt("Enter IP address or hostname")
+            if validate_ip_address(custom_addr):
+                resolved_ip = custom_addr
+            else:
+                try:
+                    resolved_ip = resolve_hostname(custom_addr)
+                    console.print(f"[green]✓[/green] Resolved to: {resolved_ip}")
+                except ValueError as e:
+                    console.print(f"[red]Cannot resolve address:[/red] {e}")
+                    raise typer.Exit(1)
+
+    console.print(f"[green]Agent IP:[/green] {resolved_ip}")
     console.print(f"[green]Agent Port:[/green] {agent_port}")
     console.print(f"[green]ROS Domain ID:[/green] {domain_id}")
 
-    # Step 4: Confirm and apply
-    console.print("\n[bold]Step 4:[/bold] Apply Configuration")
+    # =========================================================================
+    # Step 5: Configuration Summary
+    # =========================================================================
+    console.print("\n[bold cyan]Step 5/6:[/bold cyan] Configuration Summary")
 
+    summary_table = Table(show_header=False, box=None, padding=(0, 2))
+    summary_table.add_column("Setting", style="cyan")
+    summary_table.add_column("Value", style="green")
+    summary_table.add_row("Serial Port", selected_port)
+    summary_table.add_row("WiFi SSID", ssid)
+    summary_table.add_row("WiFi Password", "*" * len(password))
+    summary_table.add_row("Agent IP", resolved_ip)
+    summary_table.add_row("Agent Port", str(agent_port))
+    summary_table.add_row("ROS Domain ID", str(domain_id))
+    console.print(summary_table)
+
+    console.print()
     if not typer.confirm("Apply this configuration to the robot?", default=True):
+        if typer.confirm("Restart the wizard?", default=True):
+            # Recursively call with no arguments to restart
+            console.print("\n" + "=" * 50 + "\n")
+            wifi_setup()
+            return
         console.print("[yellow]Configuration cancelled.[/yellow]")
         raise typer.Abort()
 
-    try:
-        with console.status("[bold green]Connecting to robot..."):
-            configurator = RobotConfigurator(selected_port)
+    # =========================================================================
+    # Step 6: Apply Configuration with Retry
+    # =========================================================================
+    console.print("\n[bold cyan]Step 6/6:[/bold cyan] Apply Configuration")
 
-        with console.status("[bold green]Sending WiFi configuration..."):
-            configurator.set_wifi(WiFiCredentials(ssid, password))
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            with console.status("[bold green]Connecting to robot..."):
+                configurator = RobotConfigurator(selected_port)
 
-        with console.status("[bold green]Sending agent configuration..."):
-            configurator.set_udp_agent(UDPAgentConfig(agent_ip, agent_port))
-            configurator.set_transport(TRANSPORT_WIFI_UDP)
-            configurator.set_ros_domain_id(domain_id)
+            with console.status("[bold green]Sending WiFi configuration..."):
+                configurator.set_wifi(WiFiCredentials(ssid, password))
 
-        if not no_reboot:
-            with console.status("[bold green]Rebooting robot..."):
-                configurator.reboot()
+            with console.status("[bold green]Sending agent configuration..."):
+                configurator.set_udp_agent(UDPAgentConfig(resolved_ip, agent_port))
+                configurator.set_transport(TRANSPORT_WIFI_UDP)
+                configurator.set_ros_domain_id(domain_id)
 
-        configurator.close()
+            if not no_reboot:
+                with console.status("[bold green]Rebooting robot..."):
+                    configurator.reboot()
 
-        console.print("\n[bold green]WiFi configuration complete![/bold green]")
-        console.print("\nNext steps:")
-        console.print("  1. Disconnect the USB cable")
-        console.print("  2. Power cycle the robot")
-        console.print("  3. Wait 10-15 seconds for WiFi connection")
-        console.print("  4. Run: [cyan]nimbus run --behavior wander[/cyan]")
+            configurator.close()
 
-    except Exception as e:
-        console.print(f"\n[red]Configuration failed:[/red] {e}")
-        console.print("\nTroubleshooting:")
-        console.print("  - Check USB cable connection")
-        console.print("  - Ensure robot is powered on")
-        console.print("  - Try a different USB port")
-        raise typer.Exit(1)
+            console.print("\n[bold green]✓ WiFi configuration complete![/bold green]")
+            console.print("\nNext steps:")
+            console.print("  1. Disconnect the USB cable")
+            console.print("  2. Power cycle the robot")
+            console.print("  3. Wait 10-15 seconds for WiFi connection")
+            console.print("  4. Run: [cyan]nimbus run --behavior wander[/cyan]")
+            return
+
+        except Exception as e:
+            console.print(f"\n[red]Configuration failed (attempt {attempt}/{max_retries}):[/red] {e}")
+
+            if attempt < max_retries:
+                console.print("\nTroubleshooting tips:")
+                console.print("  - Ensure USB cable is firmly connected")
+                console.print("  - Check robot is powered on")
+                console.print("  - Try unplugging and reconnecting USB")
+                if typer.confirm("Retry?", default=True):
+                    continue
+                else:
+                    break
+            else:
+                console.print("\n[red]All retry attempts failed.[/red]")
+
+    console.print("\nTroubleshooting:")
+    console.print("  - Check USB cable connection")
+    console.print("  - Ensure robot is powered on")
+    console.print("  - Try a different USB port")
+    console.print("  - Try a different USB cable")
+    in_dialout, username = check_dialout_group()
+    if not in_dialout:
+        console.print(f"  - Add user to dialout: [cyan]sudo usermod -aG dialout {username}[/cyan]")
+    raise typer.Exit(1)
 
 
 @wifi_app.command("status")
