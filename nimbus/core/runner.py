@@ -2,7 +2,7 @@
 Main control loop for Nimbus.
 
 The NimbusRunner orchestrates:
-- ROS2 topic subscriptions
+- XRCE-DDS topic subscriptions (ESP32 communication)
 - Sensor processing
 - Behavior execution
 - Safety filtering
@@ -17,7 +17,7 @@ import threading
 import time
 import numpy as np
 
-from .node import NimbusNode, MockNimbusNode, XRCENode
+from .node import MockNimbusNode, XRCENode
 from .state import RobotContext, RobotState, Pose2D, Velocity, SensorSnapshot
 from .config import NimbusConfig
 from nimbus.sensors.lidar import LidarProcessor
@@ -38,7 +38,7 @@ class NimbusRunner:
     Main Nimbus control loop.
 
     Coordinates all components:
-    - Subscribes to ROS2 topics
+    - Subscribes to XRCE-DDS topics
     - Processes sensor data
     - Executes behaviors
     - Filters through safety controller
@@ -56,15 +56,12 @@ class NimbusRunner:
         self,
         config: Optional[NimbusConfig] = None,
         mock: bool = False,  # Use mock node for testing
-        xrce: bool = False,  # Use pure Python XRCE agent (no ROS2/Docker)
-        direct: bool = False,  # Deprecated alias for xrce
     ):
         self.config = config or NimbusConfig.load()
         self._mock = mock
-        self._xrce = xrce or direct  # Support both for backwards compatibility
 
         # Core components
-        self._node: Optional[NimbusNode] = None
+        self._node: Optional[XRCENode] = None
         self._context = RobotContext()
         self._behavior_manager = BehaviorManager()
         self._safety = SafetyController(self.config.navigation)
@@ -133,61 +130,31 @@ class NimbusRunner:
         # Create node based on mode
         if self._mock:
             self._node = MockNimbusNode("nimbus")
-        elif self._xrce:
-            # XRCE mode - use pure Python XRCE agent (no ROS2/Docker)
+        else:
+            # XRCE mode - pure Python XRCE agent for ESP32 communication
             self._node = XRCENode(
                 name="nimbus_xrce",
                 port=self.config.agent.agent_port,
             )
-        else:
-            # Standard ROS2 mode
-            self._node = NimbusNode("nimbus")
 
         self._node.start()
 
-        # Subscribe to topics
-        if self._xrce:
-            # XRCE mode - use built-in message types
-            from nimbus.core.xrce.messages import LaserScan, Odometry, Twist
+        # Subscribe to topics using XRCE message types
+        from nimbus.core.xrce.messages import LaserScan, Odometry, Twist
 
-            self._scan_buffer = self._node.subscribe(
-                self.config.sensors.lidar_topic,
-                LaserScan,
-                buffer_size=1
-            )
+        self._scan_buffer = self._node.subscribe(
+            self.config.sensors.lidar_topic,
+            LaserScan,
+            buffer_size=1
+        )
 
-            self._odom_buffer = self._node.subscribe(
-                self.config.sensors.odom_topic,
-                Odometry,
-                buffer_size=1
-            )
+        self._odom_buffer = self._node.subscribe(
+            self.config.sensors.odom_topic,
+            Odometry,
+            buffer_size=1
+        )
 
-            self._cmd_publisher = self._node.publisher("/cmd_vel", Twist)
-        else:
-            # ROS2 mode
-            try:
-                from sensor_msgs.msg import LaserScan
-                from nav_msgs.msg import Odometry
-                from geometry_msgs.msg import Twist
-
-                self._scan_buffer = self._node.subscribe(
-                    self.config.sensors.lidar_topic,
-                    LaserScan,
-                    buffer_size=1
-                )
-
-                self._odom_buffer = self._node.subscribe(
-                    self.config.sensors.odom_topic,
-                    Odometry,
-                    buffer_size=1
-                )
-
-                self._cmd_publisher = self._node.publisher("/cmd_vel", Twist)
-
-            except ImportError:
-                # Running without ROS2 - use mock
-                self._scan_buffer = self._node.subscribe("/scan", object, buffer_size=1)
-                self._odom_buffer = self._node.subscribe("/odom_raw", object, buffer_size=1)
+        self._cmd_publisher = self._node.publisher("/cmd_vel", Twist)
 
         self._running = True
         self._shutdown_event.clear()
@@ -471,8 +438,6 @@ class NimbusRunner:
 def create_runner(
     config_path: Optional[str] = None,
     mock: bool = False,
-    xrce: bool = False,
-    direct: bool = False,  # Deprecated alias for xrce
 ) -> NimbusRunner:
     """
     Factory function to create a configured runner.
@@ -480,8 +445,6 @@ def create_runner(
     Args:
         config_path: Optional path to config file
         mock: Use mock node for testing
-        xrce: Use pure Python XRCE agent (no ROS2/Docker required)
-        direct: Deprecated alias for xrce (backwards compatibility)
 
     Returns:
         Configured NimbusRunner
@@ -489,4 +452,4 @@ def create_runner(
     from pathlib import Path
 
     config = NimbusConfig.load(Path(config_path) if config_path else None)
-    return NimbusRunner(config=config, mock=mock, xrce=xrce or direct)
+    return NimbusRunner(config=config, mock=mock)

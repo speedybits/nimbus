@@ -1,7 +1,7 @@
 """
 Odometry processing for Nimbus.
 
-Tracks robot pose from ROS2 odometry messages.
+Tracks robot pose from XRCE-DDS odometry messages.
 """
 
 from dataclasses import dataclass
@@ -148,37 +148,14 @@ class SensorFusion:
 # Helper function to create velocity command messages
 def create_twist_msg(linear: float, angular: float):
     """
-    Create a ROS2 Twist message.
+    Create an XRCE Twist message.
 
     Args:
         linear: Forward velocity (m/s)
         angular: Rotational velocity (rad/s)
 
     Returns:
-        geometry_msgs/Twist message
+        XRCE Twist message
     """
-    try:
-        from geometry_msgs.msg import Twist
-        msg = Twist()
-        msg.linear.x = float(linear)
-        msg.linear.y = 0.0
-        msg.linear.z = 0.0
-        msg.angular.x = 0.0
-        msg.angular.y = 0.0
-        msg.angular.z = float(angular)
-        return msg
-    except ImportError:
-        # Return a mock object for testing
-        return MockTwist(linear, angular)
-
-
-@dataclass
-class MockTwist:
-    """Mock Twist message for testing without ROS2."""
-
-    linear_x: float
-    angular_z: float
-
-    def __init__(self, linear: float, angular: float):
-        self.linear = type('obj', (object,), {'x': linear, 'y': 0.0, 'z': 0.0})()
-        self.angular = type('obj', (object,), {'x': 0.0, 'y': 0.0, 'z': angular})()
+    from nimbus.core.xrce.messages import Twist
+    return Twist.create(linear_x=float(linear), angular_z=float(angular))

@@ -31,18 +31,6 @@ api:
   websocket_rate_hz: 10.0   # Telemetry update rate
 
 agent:
-  auto_start: true
-  docker_image: "microros/micro-ros-agent:humble"
-  container_name: "nimbus_microros_agent"
-
-  # Transport mode: "serial" or "wifi"
-  transport: "serial"
-
-  # Serial settings (used when transport: "serial")
-  device: "/dev/ttyACM0"
-  baudrate: 115200
-
-  # WiFi/UDP settings (used when transport: "wifi")
+  # XRCE-DDS agent settings for ESP32 communication
   agent_ip: ""              # Empty = auto-detect local IP
-  agent_port: 8090          # UDP port for Micro-ROS agent
-  ros_domain_id: 20         # ROS2 domain ID
+  agent_port: 8090          # UDP port for XRCE agent

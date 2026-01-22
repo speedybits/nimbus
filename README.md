@@ -7,10 +7,11 @@
 ## Features
 
 - **Lightweight** — No Nav2, no AMCL, no complex costmaps. Just pure Python.
+- **ROS2-Free** — Communicates directly with ESP32 via XRCE-DDS (no Docker required)
 - **Safe** — Hardware safety layer that cannot be bypassed
 - **Beautiful CLI** — Rich terminal interface with live dashboard
 - **API-First** — REST + WebSocket for Home Assistant, custom dashboards, AI integration
-- **Test-Driven** — Comprehensive test suite runs without ROS2
+- **Test-Driven** — Comprehensive test suite runs without hardware
 - **Extensible** — Plugin system for custom behaviors
 
 ## Quick Start
@@ -20,54 +21,29 @@
 cd /home/mike/projects/nimbus
 pip install -e ".[dev]"
 
-# Run tests (no ROS2 required!)
+# Run tests (no hardware required!)
 nimbus test
 
 # Start with mock mode (no hardware)
 nimbus run --mock --behavior wander
-```
 
-### Connecting to the Robot
-
-**Option 1: XRCE Mode (Recommended)** — No ROS2 or Docker required!
-
-```bash
-# WiFi: Pure Python XRCE connection to ESP32
-nimbus run --xrce --behavior wander
-
-# With auto-discovery
-nimbus run --xrce --discover --behavior wander
-```
-
-**Option 2: ROS2 Mode** — Traditional ROS2 stack with Micro-ROS agent
-
-```bash
-# Start the Micro-ROS agent first
-nimbus connect
-
-# Then run Nimbus
+# Connect to real robot
 nimbus run --behavior wander
 ```
 
-> **Note**: If you've already run `nimbus connect`, use ROS2 mode (without `--xrce`).
-> XRCE mode and the Micro-ROS agent both use UDP port 8090 and cannot run simultaneously.
-
 ## Requirements
 
-**Minimum (XRCE Mode):**
 - Python 3.10+
+- ESP32 robot with Micro-ROS firmware (for hardware mode)
 
-**Full (ROS2 Mode):**
-- Python 3.10+
-- ROS2 Humble
-- Docker (for Micro-ROS agent)
+No ROS2 or Docker required!
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        Nimbus CLI                           │
-│   nimbus run | status | test | calibrate | goto | stop      │
+│        nimbus run | status | test | goto | stop             │
 └─────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────┐
@@ -92,19 +68,14 @@ nimbus run --behavior wander
                               │
 ┌─────────────────────────────────────────────────────────────┐
 │                    Core Layer                               │
-│           NimbusNode │ XRCENode │ State Machine             │
+│              XRCENode │ State Machine │ Config              │
 └─────────────────────────────────────────────────────────────┘
-                 │                        │
-    ┌────────────┴────────────┐           │
-    │     ROS2 Mode           │           │  XRCE Mode (--xrce)
-    │                         │           │
-┌───────────────────┐         │    ┌──────────────────────┐
-│ Micro-ROS Agent   │         │    │ XRCEAgent            │
-│ (Docker)          │         │    │ (Pure Python)        │
-│  /scan /odom_raw  │         │    │  No ROS2 required    │
-└───────────────────┘         │    └──────────────────────┘
-         │                    │              │
-         └────────────────────┼──────────────┘
+                              │
+                    ┌──────────────────────┐
+                    │ XRCEAgent            │
+                    │ (Pure Python)        │
+                    │  /scan /odom_raw     │
+                    └──────────────────────┘
                               │
                     ┌─────────────────┐
                     │   ESP32 + Motors │
@@ -117,18 +88,17 @@ nimbus run --behavior wander
 | Command | Description |
 |---------|-------------|
 | `nimbus run` | Start robot controller with live dashboard |
-| `nimbus run --xrce` | Start in XRCE mode (no ROS2 required) |
-| `nimbus run --xrce --discover` | XRCE mode with auto-discovery |
-| `nimbus connect` | Connect robot via ROS2/Micro-ROS agent |
+| `nimbus run --discover` | Start with ESP32 auto-discovery |
+| `nimbus run --mock` | Start in mock mode (no hardware) |
 | `nimbus status` | Show current robot state |
 | `nimbus stop` | Emergency stop |
 | `nimbus goto X Y` | Navigate to coordinates |
 | `nimbus behaviors` | List available behaviors |
 | `nimbus behavior NAME` | Set active behavior |
 | `nimbus explore` | Start AI-driven exploration |
-| `nimbus agent start\|stop\|status` | Manage Micro-ROS agent |
 | `nimbus wifi setup` | Configure robot WiFi |
 | `nimbus wifi discover` | Find ESP32 on network |
+| `nimbus motor forward` | Direct motor control |
 | `nimbus test` | Run test suite |
 | `nimbus version` | Show version |
 
@@ -154,41 +124,6 @@ nimbus run --behavior wander
 | `/ws/lidar` | LIDAR scans for visualization |
 | `/ws/events` | State changes and alerts |
 
-## Connection Modes
-
-Nimbus supports two ways to communicate with the ESP32 robot:
-
-| Mode | Command | Requirements | Use Case |
-|------|---------|--------------|----------|
-| **XRCE** | `nimbus run --xrce` | Python only | Simple setup, no Docker/ROS2 |
-| **ROS2** | `nimbus run` | ROS2 + Docker | Integration with ROS2 ecosystem |
-
-### XRCE Mode
-
-XRCE mode implements the XRCE-DDS protocol in pure Python, communicating directly with the ESP32's Micro-ROS firmware. No ROS2 installation or Docker required.
-
-```bash
-# WiFi (recommended for untethered operation)
-nimbus run --xrce --behavior wander
-
-# With auto-discovery
-nimbus run --xrce --discover --behavior wander
-```
-
-### ROS2 Mode
-
-Traditional mode using the Micro-ROS Docker agent. Use this if you need ROS2 integration or have already run `nimbus connect`.
-
-```bash
-# Start agent and wait for robot
-nimbus connect
-
-# Run with ROS2 (in another terminal)
-nimbus run --behavior wander
-```
-
-> **Important**: XRCE mode and ROS2 mode cannot run simultaneously — they both use UDP port 8090. If the Micro-ROS agent is running, use ROS2 mode.
-
 ## Configuration
 
 Nimbus uses YAML configuration with environment variable overrides:
@@ -210,10 +145,8 @@ api:
   rest_port: 8080
   websocket_enabled: true
 
-# XRCE mode settings
-xrce:
-  enabled: false          # Set true to use XRCE mode by default
-  bind_port: 8090         # UDP port for ESP32 communication
+agent:
+  agent_port: 8090         # UDP port for ESP32 communication
 ```
 
 Environment variables (override config):
@@ -221,9 +154,7 @@ Environment variables (override config):
 export NIMBUS_MAX_SPEED=0.25
 export NIMBUS_API_PORT=9000
 export NIMBUS_SAFETY_RADIUS=0.35
-
-# XRCE mode
-export NIMBUS_XRCE_MODE=true
+export NIMBUS_AGENT_PORT=8090
 ```
 
 ## Behaviors
@@ -234,6 +165,8 @@ export NIMBUS_XRCE_MODE=true
 | `wander` | Random exploration with VFH obstacle avoidance |
 | `goto` | Navigate to specific coordinates |
 | `patrol` | Cycle through waypoints |
+| `explore` | Systematic exploration |
+| `motor_test` | Direct motor control (bypasses safety) |
 
 ## Safety System
 
@@ -257,7 +190,7 @@ Nimbus includes a hardware safety layer that **cannot be bypassed**:
 ```
 nimbus/
 ├── nimbus/
-│   ├── core/           # ROS2 wrapper, state machine, config
+│   ├── core/           # XRCE agent, state machine, config
 │   ├── sensors/        # LIDAR processing, odometry
 │   ├── navigation/     # VFH algorithm, safety controller
 │   ├── behaviors/      # idle, wander, goto, patrol
