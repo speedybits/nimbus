@@ -8,7 +8,7 @@ Nimbus is a lightweight robot control platform that replaces heavy ROS2 navigati
 
 ```
 nimbus/
-├── core/       # ROS2 wrapper, state machine, config
+├── core/       # XRCE agent, state machine, config
 ├── sensors/    # LIDAR processing, odometry
 ├── navigation/ # VFH algorithm, safety controller
 ├── behaviors/  # idle, wander, goto, patrol
@@ -47,7 +47,7 @@ nimbus stop
 5. **Extensible**: Plugin system for growth
 6. **Elegant**: Code that reads like poetry
 
-## ROS2 Topics Used
+## XRCE-DDS Topics
 
 - `/scan` - LaserScan from LIDAR (subscribed)
 - `/odom_raw` - Raw odometry from ESP32 (subscribed)

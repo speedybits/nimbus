@@ -233,8 +233,8 @@ def create_app() -> FastAPI:
             raise HTTPException(503, detail="Nimbus not initialized")
 
         node = _runner._node
-        if not hasattr(node, '_agent'):
-            return {"error": "Not in XRCE mode"}
+        if not hasattr(node, '_agent') or node._agent is None:
+            return {"error": "Mock mode - no XRCE agent"}
 
         agent = node._agent
         entities = agent._entities

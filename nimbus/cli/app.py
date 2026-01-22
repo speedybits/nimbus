@@ -28,9 +28,7 @@ def run(
     api: bool = typer.Option(True, help="Enable REST/WebSocket API"),
     dashboard: bool = typer.Option(True, help="Show live dashboard"),
     config: Optional[Path] = typer.Option(None, help="Path to config file"),
-    mock: bool = typer.Option(False, "--mock", help="Use mock node (no ROS2)"),
-    xrce: bool = typer.Option(False, "--xrce", help="Pure Python XRCE mode (no ROS2/Docker required)"),
-    direct: bool = typer.Option(False, "--direct", hidden=True, help="Deprecated alias for --xrce"),
+    mock: bool = typer.Option(False, "--mock", help="Use mock node (no hardware)"),
     discover: bool = typer.Option(False, "--discover", help="Auto-discover ESP32 on network"),
     verbosity: int = typer.Option(1, "-v", "--verbosity", min=1, max=3, help="Log verbosity: 1=minimal, 2=normal, 3=debug"),
 ):
@@ -40,22 +38,17 @@ def run(
     Examples:
         nimbus run --behavior wander
         nimbus run --behavior idle --no-dashboard
-        nimbus run --xrce --behavior wander           # Pure Python XRCE mode
-        nimbus run --xrce --discover --behavior wander  # Auto-discover ESP32
-        nimbus run --xrce -v 3                        # Debug verbosity
+        nimbus run --discover --behavior wander    # Auto-discover ESP32
+        nimbus run -v 3                            # Debug verbosity
     """
-    # Support both --xrce and deprecated --direct
-    xrce = xrce or direct
-
-    # Set log verbosity for XRCE mode
-    if xrce:
-        from nimbus.core.xrce.logger import set_verbosity
-        set_verbosity(verbosity)
+    # Set log verbosity
+    from nimbus.core.xrce.logger import set_verbosity
+    set_verbosity(verbosity)
 
     from nimbus.core.runner import create_runner
 
-    # Auto-discover ESP32 if requested (informational only in XRCE mode)
-    if discover and xrce:
+    # Auto-discover ESP32 if requested
+    if discover:
         from nimbus.core.network import scan_for_esp32, get_local_subnet
 
         subnet_info = get_local_subnet()
@@ -79,20 +72,18 @@ def run(
                 console.print(f"  - {dev['ip']} ({dev['latency_ms']:.0f}ms)")
 
     # Banner
-    mode_str = "XRCE" if xrce else "ROS2"
     console.print(Panel.fit(
-        f"[bold blue]Nimbus[/bold blue] Robot Controller [dim]({mode_str} mode)[/dim]",
+        "[bold blue]Nimbus[/bold blue] Robot Controller",
         subtitle="Press Ctrl+C to stop"
     ))
 
-    if xrce:
-        console.print("[green]Mode:[/green] Pure Python XRCE Agent (waiting for ESP32)")
+    if not mock:
+        console.print("[green]Mode:[/green] XRCE Agent (waiting for ESP32)")
 
     # Create runner
     runner = create_runner(
         config_path=str(config) if config else None,
         mock=mock,
-        xrce=xrce,
     )
 
     # Set initial behavior
@@ -178,77 +169,6 @@ def stop():
         console.print("If robot is still moving, physically power it off.")
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
-
-
-@app.command()
-def connect(
-    timeout: int = typer.Option(15, help="Max seconds to wait for robot connection"),
-    transport: str = typer.Option(None, help="Transport mode: serial or wifi (default: from config)"),
-):
-    """
-    Wait for robot to connect and verify data flow.
-
-    Ensures Micro-ROS agent is running, then waits for LIDAR data
-    to confirm the robot is connected and responsive.
-
-    Examples:
-        nimbus connect
-        nimbus connect --transport wifi
-        nimbus connect --timeout 30
-    """
-    import time
-    from nimbus.core.agent import MicroROSAgent
-    from nimbus.core.config import NimbusConfig
-
-    config = NimbusConfig.load()
-
-    # Override transport if specified
-    if transport:
-        config.agent.transport = transport
-
-    agent = MicroROSAgent(config.agent)
-
-    # Step 1: Ensure agent is running
-    with console.status("[cyan]Checking Micro-ROS agent..."):
-        if not agent.is_running():
-            mode = config.agent.transport
-            console.print(f"[yellow]Starting Micro-ROS agent ({mode} mode)...[/yellow]")
-            if not agent.start():
-                console.print("[red]Failed to start Micro-ROS agent[/red]")
-                console.print("[dim]Check that Docker is running and the image is available[/dim]")
-                raise typer.Exit(1)
-            time.sleep(2)  # Give agent time to initialize
-            console.print(f"[green]✓[/green] Agent started ({mode} mode)")
-        else:
-            console.print("[green]✓[/green] Agent already running")
-
-    # Step 2: Wait for robot data
-    console.print("[cyan]Waiting for robot to connect...[/cyan]")
-    console.print("[dim]If robot doesn't respond, try pressing the reset button on the ESP32[/dim]")
-
-    start_time = time.time()
-    with console.status("[cyan]Scanning for LIDAR data...") as status:
-        while time.time() - start_time < timeout:
-            elapsed = int(time.time() - start_time)
-            status.update(f"[cyan]Waiting for robot... ({elapsed}s / {timeout}s)")
-
-            # Check for data (5 second window to collect enough samples)
-            if agent.wait_for_data("/scan", timeout=5):
-                # Data detected! Get the rate
-                rate = agent.get_topic_rate("/scan", sample_time=3)
-                console.print(f"[bold green]✓ Robot connected![/bold green]")
-                console.print(f"  LIDAR data rate: [cyan]{rate:.1f} Hz[/cyan]")
-                console.print(f"\n[dim]Ready to run: nimbus run --behavior idle[/dim]")
-                raise typer.Exit(0)
-
-    # Timeout reached
-    console.print(f"[bold red]✗ Timeout after {timeout} seconds[/bold red]")
-    console.print("\n[yellow]Troubleshooting steps:[/yellow]")
-    console.print("  1. Check robot power is on (green LED should be solid)")
-    console.print("  2. Press the reset button on the robot's ESP32")
-    console.print("  3. Verify robot is on the same WiFi network")
-    console.print("  4. Run 'nimbus agent status' to check agent status")
-    raise typer.Exit(1)
 
 
 @app.command("goto")
@@ -358,9 +278,7 @@ def explore(
     api: bool = typer.Option(True, help="Enable REST/WebSocket API"),
     dashboard: bool = typer.Option(True, help="Show live dashboard"),
     config: Optional[Path] = typer.Option(None, help="Path to config file"),
-    mock: bool = typer.Option(False, "--mock", help="Use mock node (no ROS2)"),
-    xrce: bool = typer.Option(False, "--xrce", help="Pure Python XRCE mode (no ROS2/Docker required)"),
-    direct: bool = typer.Option(False, "--direct", hidden=True, help="Deprecated alias for --xrce"),
+    mock: bool = typer.Option(False, "--mock", help="Use mock node (no hardware)"),
     verbosity: int = typer.Option(1, "-v", "--verbosity", min=1, max=3, help="Log verbosity: 1=minimal, 2=normal, 3=debug"),
 ):
     """
@@ -373,16 +291,11 @@ def explore(
         nimbus explore                              # Use default memory
         nimbus explore --memory kitchen             # Load/create kitchen memory
         nimbus explore --new living_room            # Start fresh exploration
-        nimbus explore --xrce                       # Pure Python XRCE mode
-        nimbus explore --xrce -v 3                  # Debug verbosity
+        nimbus explore -v 3                         # Debug verbosity
     """
-    # Support both --xrce and deprecated --direct
-    xrce = xrce or direct
-
-    # Set log verbosity for XRCE mode
-    if xrce:
-        from nimbus.core.xrce.logger import set_verbosity
-        set_verbosity(verbosity)
+    # Set log verbosity
+    from nimbus.core.xrce.logger import set_verbosity
+    set_verbosity(verbosity)
 
     from nimbus.core.runner import create_runner
     from nimbus.ai.memory import ExplorationMemory
@@ -393,9 +306,8 @@ def explore(
         console.print(f"[yellow]Starting fresh memory:[/yellow] {memory}")
 
     # Banner
-    mode_str = "XRCE" if xrce else "ROS2"
     console.print(Panel.fit(
-        f"[bold blue]Nimbus AI Explorer[/bold blue] [dim]({mode_str} mode)[/dim]",
+        "[bold blue]Nimbus AI Explorer[/bold blue]",
         subtitle="Powered by Ollama | Press Ctrl+C to stop"
     ))
 
@@ -403,7 +315,6 @@ def explore(
     runner = create_runner(
         config_path=str(config) if config else None,
         mock=mock,
-        xrce=xrce,
     )
 
     # Check Ollama availability
@@ -580,69 +491,6 @@ def test(
     raise typer.Exit(result.returncode)
 
 
-@app.command()
-def agent(
-    action: str = typer.Argument(..., help="Action: start, stop, status"),
-    transport: Optional[str] = typer.Option(None, help="Transport mode: serial or wifi"),
-):
-    """
-    Manage Micro-ROS agent.
-
-    Examples:
-        nimbus agent start                    # Use configured transport
-        nimbus agent start --transport wifi   # Force WiFi mode
-        nimbus agent stop
-        nimbus agent status
-    """
-    from nimbus.core.agent import MicroROSAgent
-    from nimbus.core.config import NimbusConfig
-
-    config = NimbusConfig.load()
-    agent_mgr = MicroROSAgent(config.agent)
-
-    if action == "start":
-        mode = transport or config.agent.transport
-        with console.status(f"[bold green]Starting Micro-ROS agent ({mode})..."):
-            success = agent_mgr.start(transport=transport)
-        if success:
-            console.print(f"[green]Micro-ROS agent started[/green] ({mode} mode)")
-            if mode == "wifi":
-                from nimbus.core.network import get_local_ip
-                agent_ip = config.agent.agent_ip or get_local_ip()
-                console.print(f"  Listening on UDP port {config.agent.agent_port}")
-                console.print(f"  Agent IP: {agent_ip}")
-            else:
-                console.print(f"  Device: {config.agent.device}")
-        else:
-            console.print("[red]Failed to start Micro-ROS agent[/red]")
-            raise typer.Exit(1)
-
-    elif action == "stop":
-        with console.status("[bold yellow]Stopping Micro-ROS agent..."):
-            agent_mgr.stop()
-        console.print("[yellow]Micro-ROS agent stopped[/yellow]")
-
-    elif action == "status":
-        status = agent_mgr.status()
-        if status["running"]:
-            console.print(f"[green]Micro-ROS agent is running[/green]")
-            console.print(f"  Transport: {status.get('transport', 'unknown')}")
-            console.print(f"  Container: {status.get('container_id', 'unknown')[:12]}")
-            if status.get("transport") == "wifi":
-                console.print(f"  Agent IP: {status.get('agent_ip', 'unknown')}")
-                console.print(f"  UDP Port: {status.get('agent_port', 'unknown')}")
-            else:
-                console.print(f"  Device: {status.get('device', 'unknown')}")
-        else:
-            console.print("[yellow]Micro-ROS agent is not running[/yellow]")
-            console.print(f"  Configured transport: {config.agent.transport}")
-
-    else:
-        console.print(f"[red]Unknown action:[/red] {action}")
-        console.print("Valid actions: start, stop, status")
-        raise typer.Exit(1)
-
-
 # WiFi subcommand group
 wifi_app = typer.Typer(help="WiFi configuration for Yahboom robots")
 app.add_typer(wifi_app, name="wifi")
@@ -752,7 +600,7 @@ def wifi_setup(
         console.print("  1. Disconnect the USB cable")
         console.print("  2. Power cycle the robot")
         console.print("  3. Wait 10-15 seconds for WiFi connection")
-        console.print(f"  4. Run: [cyan]nimbus agent start --transport wifi[/cyan]")
+        console.print("  4. Run: [cyan]nimbus run --behavior wander[/cyan]")
 
     except Exception as e:
         console.print(f"\n[red]Configuration failed:[/red] {e}")
@@ -805,62 +653,6 @@ def wifi_status(
     except Exception as e:
         console.print(f"[red]Failed to read configuration:[/red] {e}")
         raise typer.Exit(1)
-
-
-@wifi_app.command("test")
-def wifi_test(
-    timeout: float = typer.Option(5.0, "--timeout", "-t", help="Test timeout in seconds"),
-):
-    """
-    Test WiFi connectivity to robot.
-
-    Checks if the Micro-ROS agent can receive connections
-    on the configured UDP port.
-    """
-    from nimbus.core.config import NimbusConfig
-    from nimbus.core.network import get_local_ip
-
-    config = NimbusConfig.load()
-    agent_ip = config.agent.agent_ip or get_local_ip()
-    agent_port = config.agent.agent_port
-
-    console.print(f"Testing connection to {agent_ip}:{agent_port}...")
-
-    # Check if agent is running
-    from nimbus.core.agent import MicroROSAgent
-    agent_mgr = MicroROSAgent(config.agent)
-
-    if agent_mgr.is_running():
-        console.print("[green]Micro-ROS agent is running[/green]")
-
-        # Try to check ROS2 topics
-        import subprocess
-        try:
-            result = subprocess.run(
-                ["ros2", "topic", "list"],
-                capture_output=True,
-                text=True,
-                timeout=timeout
-            )
-            if result.returncode == 0:
-                topics = [t for t in result.stdout.strip().split("\n") if t]
-                if "/scan" in topics or "/odom_raw" in topics:
-                    console.print("[green]Robot topics detected![/green]")
-                    for topic in ["/scan", "/odom_raw", "/cmd_vel"]:
-                        status = "[green]✓[/green]" if topic in topics else "[yellow]○[/yellow]"
-                        console.print(f"  {status} {topic}")
-                else:
-                    console.print("[yellow]Agent running but robot topics not yet visible[/yellow]")
-                    console.print("The robot may still be connecting to WiFi.")
-            else:
-                console.print("[yellow]Could not list ROS2 topics[/yellow]")
-        except FileNotFoundError:
-            console.print("[yellow]ROS2 not found - cannot verify topics[/yellow]")
-        except subprocess.TimeoutExpired:
-            console.print("[yellow]Timeout waiting for ROS2 topics[/yellow]")
-    else:
-        console.print("[yellow]Micro-ROS agent is not running[/yellow]")
-        console.print(f"Start it with: [cyan]nimbus agent start --transport wifi[/cyan]")
 
 
 @wifi_app.command("discover")
@@ -938,7 +730,7 @@ def wifi_discover(
             console.print(f"  IP Address: [cyan]{robot_ip}[/cyan]")
             console.print(f"  Packets received: {packet_count}")
             console.print(f"\nTo connect:")
-            console.print(f"  [cyan]nimbus run --direct --esp32-ip {robot_ip} --behavior wander[/cyan]")
+            console.print(f"  [cyan]nimbus run --behavior wander[/cyan]")
         else:
             console.print("\n[yellow]No robot traffic detected.[/yellow]")
             console.print("\nMake sure to:")
@@ -987,14 +779,11 @@ def wifi_discover(
     # Suggest command based on results
     console.print()
     if len(devices) == 1:
-        ip = devices[0]["ip"]
         console.print(f"Found 1 device. To connect:")
-        console.print(f"  [cyan]nimbus run --direct --esp32-ip {ip} --behavior wander[/cyan]")
+        console.print(f"  [cyan]nimbus run --behavior wander[/cyan]")
     else:
         console.print(f"Found {len(devices)} devices. To identify the robot:")
         console.print(f"  [cyan]nimbus wifi discover --probe[/cyan]")
-        console.print("\nOr specify the ESP32 IP manually:")
-        console.print(f"  [cyan]nimbus run --direct --esp32-ip <IP> --behavior wander[/cyan]")
 
 
 @app.command()
@@ -1068,7 +857,7 @@ def motor(
 
     except httpx.ConnectError:
         console.print("[red]Error:[/red] Could not connect to Nimbus. Is it running?")
-        console.print("Start with: [cyan]nimbus run --xrce --behavior motor_test[/cyan]")
+        console.print("Start with: [cyan]nimbus run --behavior motor_test[/cyan]")
         raise typer.Exit(1)
 
 

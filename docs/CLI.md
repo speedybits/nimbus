@@ -36,7 +36,7 @@ Usage: nimbus [OPTIONS] COMMAND [ARGS]...
 │ behavior    Set active behavior.                                             │
 │ explore     Start AI-driven exploration with Ollama.                         │
 │ test        Run Nimbus test suite.                                           │
-│ agent       Manage Micro-ROS agent.                                          │
+│ motor       Direct motor control.                                            │
 │ version     Show Nimbus version.                                             │
 │ memory      Manage exploration memories                                      │
 │ wifi        WiFi configuration for Yahboom robots                            │
@@ -61,9 +61,9 @@ nimbus run [OPTIONS]
 | `--api / --no-api` | `--api` | Enable REST/WebSocket API |
 | `--dashboard / --no-dashboard` | `--dashboard` | Show live terminal dashboard |
 | `--config PATH` | None | Path to custom config file |
-| `--mock` | False | Use mock node (no ROS2 required) |
-| `--xrce` | False | Use pure Python XRCE mode (no ROS2/Docker required) |
-| `--discover` | False | Auto-discover ESP32 IP on network (use with `--xrce`) |
+| `--mock` | False | Use mock node (no hardware required) |
+| `--discover` | False | Auto-discover ESP32 IP on network |
+| `-v, --verbosity` | 1 | Log verbosity: 1=minimal, 2=normal, 3=debug |
 
 ### Examples
 
@@ -83,11 +83,11 @@ nimbus run --mock --behavior wander
 # Use custom config
 nimbus run --config /path/to/config.yaml
 
-# XRCE mode (no ROS2/Docker needed)
-nimbus run --xrce --behavior wander
+# With auto-discover
+nimbus run --discover --behavior wander
 
-# XRCE mode with auto-discover
-nimbus run --xrce --discover --behavior wander
+# Debug verbosity
+nimbus run -v 3 --behavior wander
 ```
 
 ### Live Dashboard
@@ -146,13 +146,6 @@ nimbus status
 ╰───────────────────────────────────────────────────────╯
 ```
 
-### Errors
-
-If Nimbus is not running:
-```
-Error: Could not connect to Nimbus. Is it running?
-```
-
 ---
 
 ## nimbus stop
@@ -161,18 +154,6 @@ Emergency stop - immediately halt all motion.
 
 ```bash
 nimbus stop
-```
-
-### Output
-
-```
-EMERGENCY STOP ACTIVATED
-```
-
-This command attempts to contact the API. If unreachable:
-```
-Warning: Could not reach API. Robot may still be moving.
-If robot is still moving, physically power it off.
 ```
 
 ---
@@ -208,18 +189,6 @@ nimbus goto 2.0 3.5
 nimbus goto 2.0 3.5 --no-wait
 ```
 
-### Output (with --wait)
-
-```
-Navigating to (2.0, 3.5)...
-Navigation started
-⠋ State: NAVIGATING
-⠙ State: NAVIGATING
-⠹ State: AVOIDING
-⠸ State: NAVIGATING
-Navigation complete
-```
-
 ---
 
 ## nimbus behaviors
@@ -228,20 +197,6 @@ List available behaviors.
 
 ```bash
 nimbus behaviors
-```
-
-### Output
-
-```
-╭───────────── Available Behaviors ──────────────╮
-│ Name             │ Active                      │
-├──────────────────┼─────────────────────────────┤
-│ idle             │                             │
-│ wander           │ Yes                         │
-│ simple_wander    │                             │
-│ goto             │                             │
-│ patrol           │                             │
-╰────────────────────────────────────────────────╯
 ```
 
 ---
@@ -254,12 +209,6 @@ Set the active behavior.
 nimbus behavior NAME
 ```
 
-### Arguments
-
-| Argument | Description |
-|----------|-------------|
-| `NAME` | Behavior name to activate |
-
 ### Examples
 
 ```bash
@@ -269,14 +218,46 @@ nimbus behavior wander
 # Switch to idle (stop)
 nimbus behavior idle
 
-# Switch to patrol
-nimbus behavior patrol
+# Switch to motor_test (direct control)
+nimbus behavior motor_test
 ```
 
-### Output
+---
 
+## nimbus motor
+
+Direct motor control (requires Nimbus to be running).
+
+```bash
+nimbus motor ACTION [OPTIONS]
 ```
-Behavior set to: wander
+
+### Actions
+
+| Action | Description |
+|--------|-------------|
+| `forward` | Move forward |
+| `backward` | Move backward |
+| `left` | Turn left |
+| `right` | Turn right |
+| `stop` | Stop motors |
+| `velocity` | Custom velocity command |
+
+### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--speed, -s FLOAT` | `0.1` | Speed for preset actions |
+| `--linear, -l FLOAT` | `0.0` | Linear velocity for `velocity` action |
+| `--angular, -a FLOAT` | `0.0` | Angular velocity for `velocity` action |
+
+### Examples
+
+```bash
+nimbus motor forward --speed 0.15     # Move forward
+nimbus motor left --speed 0.5         # Turn left
+nimbus motor stop                     # Stop motors
+nimbus motor velocity -l 0.1 -a 0.2   # Custom velocity
 ```
 
 ---
@@ -288,12 +269,6 @@ Run the Nimbus test suite.
 ```bash
 nimbus test [PATTERN] [OPTIONS]
 ```
-
-### Arguments
-
-| Argument | Description |
-|----------|-------------|
-| `PATTERN` | pytest-style test pattern (optional) |
 
 ### Options
 
@@ -315,94 +290,9 @@ nimbus test -v
 # Run specific test
 nimbus test test_vfh
 
-# Run only regression tests
-nimbus test --regression
-
 # Run with coverage
 nimbus test --cov
 ```
-
-### Output
-
-```
-Running: pytest -v /home/mike/projects/nimbus/nimbus/tests
-
-============================= test session starts ==============================
-collected 34 items
-
-test_safety.py::TestSafetyController::test_emergency_stop_when_close PASSED
-test_safety.py::TestSafetyController::test_speed_reduction_in_caution PASSED
-...
-============================== 34 passed in 0.06s ==============================
-```
-
----
-
-## nimbus agent
-
-Manage the Micro-ROS agent Docker container.
-
-```bash
-nimbus agent ACTION [OPTIONS]
-```
-
-### Actions
-
-| Action | Description |
-|--------|-------------|
-| `start` | Start the Micro-ROS agent container |
-| `stop` | Stop the agent container |
-| `status` | Check if agent is running |
-
-### Options
-
-| Option | Description |
-|--------|-------------|
-| `--transport TEXT` | Transport mode: `serial` or `wifi` |
-
-### Examples
-
-```bash
-# Start with configured transport (default: serial)
-nimbus agent start
-
-# Start in WiFi/UDP mode
-nimbus agent start --transport wifi
-# Output: Micro-ROS agent started (wifi mode)
-#         Listening on UDP port 8090
-#         Agent IP: 192.168.1.100
-
-# Start in serial mode
-nimbus agent start --transport serial
-# Output: Micro-ROS agent started (serial mode)
-#         Device: /dev/ttyACM0
-
-# Check status
-nimbus agent status
-# Output: Micro-ROS agent is running
-#         Transport: wifi
-#         Container: a1b2c3d4e5f6
-#         Agent IP: 192.168.1.100
-#         UDP Port: 8090
-
-# Stop the agent
-nimbus agent stop
-# Output: Micro-ROS agent stopped
-```
-
-### Transport Modes
-
-| Mode | Connection | Use Case |
-|------|------------|----------|
-| `serial` | USB cable (`/dev/ttyACM0`) | Development, debugging |
-| `wifi` | UDP over WiFi (port 8090) | Untethered operation |
-
-### Requirements
-
-- Docker must be installed
-- User must be in `docker` group or run as root
-- **Serial mode**: USB device must be connected
-- **WiFi mode**: Robot must be configured with `nimbus wifi setup`
 
 ---
 
@@ -414,17 +304,11 @@ Show Nimbus version.
 nimbus version
 ```
 
-### Output
-
-```
-Nimbus version 0.1.0
-```
-
 ---
 
 ## nimbus wifi
 
-Configure WiFi connectivity for Yahboom robots. These commands allow you to set up the robot for wireless operation.
+Configure WiFi connectivity for Yahboom robots.
 
 ### nimbus wifi setup
 
@@ -442,59 +326,8 @@ nimbus wifi setup [OPTIONS]
 | `--password, -p TEXT` | (prompt) | WiFi password |
 | `--port TEXT` | (auto) | Serial port for USB connection |
 | `--agent-ip TEXT` | (auto) | IP address of agent host |
-| `--agent-port INTEGER` | `8090` | UDP port for Micro-ROS agent |
-| `--domain-id INTEGER` | `20` | ROS2 domain ID |
+| `--agent-port INTEGER` | `8090` | UDP port for XRCE agent |
 | `--no-reboot` | False | Don't reboot robot after configuration |
-
-#### Examples
-
-```bash
-# Interactive setup (prompts for all values)
-nimbus wifi setup
-
-# Non-interactive setup
-nimbus wifi setup --ssid MyNetwork --password secret123
-
-# Specify agent IP manually
-nimbus wifi setup --ssid MyNetwork --agent-ip 192.168.1.100
-
-# Configure without rebooting
-nimbus wifi setup --ssid MyNetwork --no-reboot
-```
-
-#### Output
-
-```
-╭─────────── Nimbus WiFi Setup Wizard ───────────╮
-│     Configure robot for wireless operation      │
-╰────────────────────────────────────────────────╯
-
-Step 1: Serial Connection
-Found serial ports: /dev/ttyUSB0
-Using: /dev/ttyUSB0
-
-Step 2: WiFi Credentials
-WiFi network name (SSID): MyNetwork
-WiFi password: ********
-Network: MyNetwork
-
-Step 3: Agent Configuration
-Use detected IP address (192.168.1.100)? [Y/n]: y
-Agent IP: 192.168.1.100
-Agent Port: 8090
-ROS Domain ID: 20
-
-Step 4: Apply Configuration
-Apply this configuration to the robot? [Y/n]: y
-
-WiFi configuration complete!
-
-Next steps:
-  1. Disconnect the USB cable
-  2. Power cycle the robot
-  3. Wait 10-15 seconds for WiFi connection
-  4. Run: nimbus agent start --transport wifi
-```
 
 ---
 
@@ -506,67 +339,11 @@ Read current WiFi configuration from the robot (requires USB connection).
 nimbus wifi status [OPTIONS]
 ```
 
-#### Options
-
-| Option | Description |
-|--------|-------------|
-| `--port TEXT` | Serial port (auto-detect if not specified) |
-
-#### Output
-
-```
-╭─────────── Robot Configuration ───────────╮
-│ Property         │ Value                   │
-├──────────────────┼─────────────────────────┤
-│ Firmware Version │ 1.2.3                   │
-│ WiFi SSID        │ MyNetwork               │
-│ Agent IP         │ 192.168.1.100           │
-│ Agent Port       │ 8090                    │
-│ Transport Mode   │ wifi                    │
-│ ROS Domain ID    │ 20                      │
-╰───────────────────────────────────────────╯
-```
-
----
-
-### nimbus wifi test
-
-Test WiFi connectivity to the robot.
-
-```bash
-nimbus wifi test [OPTIONS]
-```
-
-#### Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--timeout, -t FLOAT` | `5.0` | Test timeout in seconds |
-
-#### Output (Success)
-
-```
-Testing connection to 192.168.1.100:8090...
-Micro-ROS agent is running
-Robot topics detected!
-  ✓ /scan
-  ✓ /odom_raw
-  ✓ /cmd_vel
-```
-
-#### Output (Agent Not Running)
-
-```
-Testing connection to 192.168.1.100:8090...
-Micro-ROS agent is not running
-Start it with: nimbus agent start --transport wifi
-```
-
 ---
 
 ### nimbus wifi discover
 
-Scan the local network to find ESP32 robots. This eliminates the need to manually find IP addresses.
+Scan the local network to find ESP32 robots.
 
 ```bash
 nimbus wifi discover [OPTIONS]
@@ -577,6 +354,7 @@ nimbus wifi discover [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--timeout, -t FLOAT` | `3.0` | Scan timeout per host in seconds |
+| `--probe, -p` | False | Listen for robot traffic on UDP port 8090 |
 
 #### Examples
 
@@ -584,59 +362,8 @@ nimbus wifi discover [OPTIONS]
 # Basic discovery
 nimbus wifi discover
 
-# With longer timeout for slower networks
-nimbus wifi discover --timeout 5
-```
-
-#### Output (Single Device Found)
-
-```
-Scanning network 172.20.10.0/28...
-Local IP: 172.20.10.2, Gateway: 172.20.10.1
-
-╭─────────── Discovered Devices ───────────╮
-│ IP Address      │ Latency   │ Status     │
-├─────────────────┼───────────┼────────────┤
-│ 172.20.10.9     │ 14ms      │ Reachable  │
-╰──────────────────────────────────────────╯
-
-Found 1 device. To connect:
-  nimbus run --xrce --behavior wander
-```
-
-#### Output (Multiple Devices Found)
-
-```
-Scanning network 192.168.1.0/24...
-Local IP: 192.168.1.100, Gateway: 192.168.1.1
-
-╭─────────── Discovered Devices ───────────╮
-│ IP Address      │ Latency   │ Status     │
-├─────────────────┼───────────┼────────────┤
-│ 192.168.1.50    │ 8ms       │ Reachable  │
-│ 192.168.1.75    │ 12ms      │ Reachable  │
-│ 192.168.1.120   │ 45ms      │ Reachable  │
-╰──────────────────────────────────────────╯
-
-Found 3 devices. To connect:
-  nimbus run --xrce --behavior wander
-
-Or use auto-discovery:
-  nimbus run --xrce --discover --behavior wander
-```
-
-#### Output (No Devices Found)
-
-```
-Scanning network 192.168.1.0/24...
-Local IP: 192.168.1.100, Gateway: 192.168.1.1
-
-No devices found on the network.
-
-Troubleshooting:
-  1. Ensure the robot is powered on
-  2. Check the robot is on the same WiFi network
-  3. Try increasing timeout: nimbus wifi discover --timeout 5
+# Listen for robot traffic (power cycle robot while listening)
+nimbus wifi discover --probe --timeout 30
 ```
 
 ---
@@ -645,55 +372,24 @@ Troubleshooting:
 
 Nimbus supports shell completion for bash, zsh, and fish.
 
-### Install Completion
-
 ```bash
-# For bash
+# Install completion
 nimbus --install-completion bash
-
-# For zsh
 nimbus --install-completion zsh
-
-# For fish
 nimbus --install-completion fish
-```
-
-After installation, restart your shell or source the completion file.
-
-### Usage
-
-```bash
-nimbus <TAB>           # Show all commands
-nimbus run --be<TAB>   # Complete to --behavior
-nimbus behavior <TAB>  # Show available behaviors
 ```
 
 ---
 
 ## Environment Variables
 
-These environment variables affect CLI behavior:
-
 | Variable | Description |
 |----------|-------------|
 | `NIMBUS_API_PORT` | REST API port (default: 8080) |
 | `NIMBUS_MAX_SPEED` | Maximum linear speed (default: 0.30) |
 | `NIMBUS_SAFETY_RADIUS` | Safety radius in meters (default: 0.30) |
-| `NIMBUS_AGENT_TRANSPORT` | Agent transport mode: `serial` or `wifi` (default: serial) |
-| `NIMBUS_AGENT_DEVICE` | Serial device path (default: /dev/ttyACM0) |
-| `NIMBUS_AGENT_IP` | Agent IP for WiFi mode (default: auto-detect) |
-| `NIMBUS_AGENT_PORT` | UDP port for WiFi mode (default: 8090) |
-| `NIMBUS_ROS_DOMAIN_ID` | ROS2 domain ID (default: 20) |
-| `NIMBUS_XRCE_MODE` | Enable XRCE mode by default (default: false) |
-
----
-
-## Exit Codes
-
-| Code | Description |
-|------|-------------|
-| 0 | Success |
-| 1 | Error (connection failed, invalid argument, etc.) |
+| `NIMBUS_AGENT_IP` | Agent IP (default: auto-detect) |
+| `NIMBUS_AGENT_PORT` | UDP port for XRCE agent (default: 8090) |
 
 ---
 
@@ -706,26 +402,13 @@ Nimbus is not running. Start it first:
 nimbus run
 ```
 
-### "ROS2 (rclpy) not available"
+### "Connection refused" or timeout
 
-ROS2 is not sourced. Source it first:
+1. Verify ESP32 is powered on and connected to WiFi
+2. Check firewall isn't blocking UDP port 8090
+3. Try with verbose logging:
 ```bash
-source /opt/ros/humble/setup.bash
-nimbus run
-```
-
-Or use mock mode:
-```bash
-nimbus run --mock
-```
-
-### "Docker not found"
-
-Docker is required for Micro-ROS agent. Install it:
-```bash
-sudo apt install docker.io
-sudo usermod -aG docker $USER
-# Log out and back in
+nimbus run -v 3 --behavior wander
 ```
 
 ### Dashboard not displaying correctly
@@ -736,41 +419,3 @@ nimbus run --no-dashboard
 ```
 
 Or check terminal size (minimum 80x24 recommended).
-
-### Direct mode: "Connection refused" or timeout
-
-1. Verify ESP32 is powered on and connected to WiFi
-2. Check ESP32 IP address is correct:
-```bash
-# Ping the ESP32
-ping 192.168.1.100
-```
-3. Ensure ESP32 firmware supports XRCE-DDS (Micro-ROS client)
-4. Check firewall isn't blocking UDP port 8090
-
-### Direct mode: "No data received"
-
-The ESP32 may not be publishing topics yet:
-```bash
-# Try with verbose logging
-NIMBUS_LOG_LEVEL=DEBUG nimbus run --xrce 192.168.1.100
-```
-
-Common causes:
-- ESP32 still initializing (wait 5-10 seconds after power-on)
-- Wrong transport mode on ESP32 (should be WiFi/UDP)
-- Network issues between PC and ESP32
-
-### Direct mode: Serial connection issues
-
-```bash
-# Check serial port exists
-ls -la /dev/ttyACM* /dev/ttyUSB*
-
-# Verify permissions
-sudo usermod -aG dialout $USER
-# Log out and back in
-
-# Try explicit port
-NIMBUS_AGENT_DEVICE=/dev/ttyUSB0 nimbus run --xrce
-```

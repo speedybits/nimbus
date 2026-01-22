@@ -66,32 +66,11 @@ class APIConfig:
 
 @dataclass
 class AgentConfig:
-    """Micro-ROS agent configuration."""
+    """XRCE-DDS agent configuration."""
 
-    auto_start: bool = True
-    docker_image: str = "microros/micro-ros-agent:humble"
-    container_name: str = "nimbus_microros_agent"
-
-    # Transport mode: "serial" or "wifi"
-    transport: str = "wifi"
-
-    # Serial settings (when transport == "serial")
-    device: str = "/dev/ttyACM0"
-    baudrate: int = 115200
-
-    # WiFi/UDP settings (when transport == "wifi")
+    # UDP settings for ESP32 communication
     agent_ip: str = ""       # Empty = auto-detect local IP
-    agent_port: int = 8090   # UDP port for Micro-ROS agent
-    ros_domain_id: int = 20  # ROS2 domain ID
-
-
-@dataclass
-class DirectConfig:
-    """Direct XRCE-DDS mode configuration (ROS2-free)."""
-
-    enabled: bool = False       # Enable direct mode by default
-    esp32_ip: str = ""          # ESP32 IP address for WiFi mode (empty = serial)
-    transport: str = "serial"   # "serial" or "udp"
+    agent_port: int = 8090   # UDP port for XRCE agent
 
 
 @dataclass
@@ -108,7 +87,6 @@ class NimbusConfig:
     navigation: NavigationConfig = field(default_factory=NavigationConfig)
     api: APIConfig = field(default_factory=APIConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
-    direct: DirectConfig = field(default_factory=DirectConfig)
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "NimbusConfig":
@@ -156,7 +134,6 @@ class NimbusConfig:
             ("navigation", config.navigation),
             ("api", config.api),
             ("agent", config.agent),
-            ("direct", config.direct),
         ]
 
         for section_name, section_obj in sections:
@@ -189,19 +166,9 @@ class NimbusConfig:
             "NIMBUS_API_HOST": ("api", "rest_host", str),
             "NIMBUS_API_PORT": ("api", "rest_port", int),
 
-            # Agent settings
-            "NIMBUS_AGENT_AUTO_START": ("agent", "auto_start", lambda x: x.lower() == "true"),
-            "NIMBUS_AGENT_DEVICE": ("agent", "device", str),
-            "NIMBUS_AGENT_BAUDRATE": ("agent", "baudrate", int),
-            "NIMBUS_AGENT_TRANSPORT": ("agent", "transport", str),
+            # Agent settings (XRCE)
             "NIMBUS_AGENT_IP": ("agent", "agent_ip", str),
             "NIMBUS_AGENT_PORT": ("agent", "agent_port", int),
-            "NIMBUS_ROS_DOMAIN_ID": ("agent", "ros_domain_id", int),
-
-            # Direct mode settings
-            "NIMBUS_DIRECT_MODE": ("direct", "enabled", lambda x: x.lower() == "true"),
-            "NIMBUS_DIRECT_ESP32_IP": ("direct", "esp32_ip", str),
-            "NIMBUS_DIRECT_TRANSPORT": ("direct", "transport", str),
         }
 
         for env_var, (section, key, converter) in mappings.items():
