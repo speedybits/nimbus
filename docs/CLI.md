@@ -312,11 +312,20 @@ Configure WiFi connectivity for Yahboom robots.
 
 ### nimbus wifi setup
 
-Interactive wizard to configure WiFi on the robot via USB.
+Interactive 6-step wizard to configure WiFi on the robot via USB.
 
 ```bash
 nimbus wifi setup [OPTIONS]
 ```
+
+#### Wizard Steps
+
+1. **Prerequisites Check** - Verifies dialout group membership for serial port access
+2. **USB Connection** - Detects new USB devices when robot is connected
+3. **WiFi Credentials** - Validates SSID length (max 32 chars) and password
+4. **Agent Configuration** - Choose mDNS hostname, fixed IP, or custom address
+5. **Configuration Summary** - Review all settings before applying
+6. **Apply Configuration** - Send config to robot with retry on failure
 
 #### Options
 
@@ -326,8 +335,42 @@ nimbus wifi setup [OPTIONS]
 | `--password, -p TEXT` | (prompt) | WiFi password |
 | `--port TEXT` | (auto) | Serial port for USB connection |
 | `--agent-ip TEXT` | (auto) | IP address of agent host |
+| `--agent-hostname TEXT` | None | mDNS hostname (e.g., `myhost.local`) |
 | `--agent-port INTEGER` | `8090` | UDP port for XRCE agent |
+| `--domain-id INTEGER` | `20` | ROS2 domain ID |
 | `--no-reboot` | False | Don't reboot robot after configuration |
+| `--skip-dialout-check` | False | Skip dialout group verification |
+
+#### Examples
+
+```bash
+# Interactive wizard (recommended for first-time setup)
+nimbus wifi setup
+
+# Pre-fill WiFi credentials
+nimbus wifi setup --ssid MyNetwork --password mypassword
+
+# Use mDNS hostname for agent (recommended - survives IP changes)
+nimbus wifi setup --agent-hostname mycomputer.local
+
+# Use fixed IP address
+nimbus wifi setup --agent-ip 192.168.1.100
+
+# Specify serial port directly
+nimbus wifi setup --port /dev/ttyUSB0
+
+# Non-interactive with all options
+nimbus wifi setup -s MyNetwork -p mypassword --agent-ip 192.168.1.100 --skip-dialout-check
+```
+
+#### Dialout Group
+
+Serial port access requires membership in the `dialout` group. If not a member:
+
+```bash
+sudo usermod -aG dialout $USER
+# Log out and back in for changes to take effect
+```
 
 ---
 

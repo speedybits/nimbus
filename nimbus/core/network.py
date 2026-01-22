@@ -6,10 +6,13 @@ for configuring and communicating with Yahboom robots over WiFi.
 """
 
 import glob
+import grp
 import os
+import pwd
 import socket
 import subprocess
-from typing import List, Optional
+import time
+from typing import List, Optional, Tuple
 
 
 def get_local_ip() -> str:
@@ -450,3 +453,64 @@ def scan_for_esp32(timeout: float = 3.0, max_workers: int = 50) -> List[dict]:
     # Sort by latency
     results.sort(key=lambda x: x["latency_ms"])
     return results
+
+
+def check_dialout_group() -> Tuple[bool, str]:
+    """
+    Check if current user is in the dialout group.
+
+    The dialout group grants access to serial ports (/dev/ttyUSB*, /dev/ttyACM*).
+    Users not in this group may encounter permission errors when accessing the robot.
+
+    Returns:
+        Tuple of (is_member, username)
+    """
+    try:
+        username = pwd.getpwuid(os.getuid()).pw_name
+        groups = [g.gr_name for g in grp.getgrall() if username in g.gr_mem]
+
+        # Also check primary group
+        primary_gid = pwd.getpwuid(os.getuid()).pw_gid
+        primary_group = grp.getgrgid(primary_gid).gr_name
+        groups.append(primary_group)
+
+        return ("dialout" in groups, username)
+    except Exception:
+        return (False, "unknown")
+
+
+def find_serial_ports_delta(ports_before: List[str]) -> Tuple[List[str], List[str]]:
+    """
+    Find new serial ports compared to a previous scan.
+
+    Useful for identifying which port corresponds to a newly-connected device.
+
+    Args:
+        ports_before: List of port paths from before device was connected
+
+    Returns:
+        Tuple of (new_ports, all_ports)
+        - new_ports: Ports that appeared since the before scan
+        - all_ports: All currently available ports
+    """
+    ports_after = find_serial_ports()
+    new_ports = [p for p in ports_after if p not in ports_before]
+    return (new_ports, ports_after)
+
+
+def validate_ip_address(ip: str) -> bool:
+    """
+    Validate an IPv4 address format.
+
+    Args:
+        ip: String to validate as IP address
+
+    Returns:
+        True if valid IPv4 address format
+    """
+    try:
+        socket.inet_aton(ip)
+        parts = ip.split(".")
+        return len(parts) == 4 and all(0 <= int(p) <= 255 for p in parts)
+    except (socket.error, ValueError):
+        return False

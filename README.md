@@ -27,6 +27,9 @@ nimbus test
 # Start with mock mode (no hardware)
 nimbus run --mock --behavior wander
 
+# Configure robot WiFi (first-time setup, requires USB)
+nimbus wifi setup
+
 # Connect to real robot
 nimbus run --behavior wander
 ```
