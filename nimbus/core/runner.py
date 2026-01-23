@@ -56,9 +56,11 @@ class NimbusRunner:
         self,
         config: Optional[NimbusConfig] = None,
         mock: bool = False,  # Use mock node for testing
+        sim: bool = False,   # Use simulation mode
     ):
         self.config = config or NimbusConfig.load()
         self._mock = mock
+        self._sim = sim
 
         # Core components
         self._node: Optional[XRCENode] = None
@@ -128,7 +130,30 @@ class NimbusRunner:
             return
 
         # Create node based on mode
-        if self._mock:
+        if self._sim:
+            # Simulation mode - generate sensor data from virtual world
+            from nimbus.sim import SimulatedWorld, SimulatorNode
+            from pathlib import Path
+
+            sim_config = self.config.simulation
+            if sim_config.map_file:
+                world = SimulatedWorld.from_file(Path(sim_config.map_file))
+            else:
+                world = SimulatedWorld.from_template(sim_config.map_template)
+
+            # Override spawn position if specified
+            if sim_config.spawn_x is not None:
+                world.robot_x = sim_config.spawn_x
+            if sim_config.spawn_y is not None:
+                world.robot_y = sim_config.spawn_y
+            if sim_config.spawn_theta is not None:
+                world.robot_theta = sim_config.spawn_theta
+
+            self._node = SimulatorNode(
+                world=world,
+                tick_rate=sim_config.tick_rate,
+            )
+        elif self._mock:
             self._node = MockNimbusNode("nimbus")
         else:
             # XRCE mode - pure Python XRCE agent for ESP32 communication
@@ -438,6 +463,7 @@ class NimbusRunner:
 def create_runner(
     config_path: Optional[str] = None,
     mock: bool = False,
+    sim: bool = False,
 ) -> NimbusRunner:
     """
     Factory function to create a configured runner.
@@ -445,6 +471,7 @@ def create_runner(
     Args:
         config_path: Optional path to config file
         mock: Use mock node for testing
+        sim: Use simulation mode
 
     Returns:
         Configured NimbusRunner
@@ -452,4 +479,4 @@ def create_runner(
     from pathlib import Path
 
     config = NimbusConfig.load(Path(config_path) if config_path else None)
-    return NimbusRunner(config=config, mock=mock)
+    return NimbusRunner(config=config, mock=mock, sim=sim)

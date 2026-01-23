@@ -29,6 +29,9 @@ def run(
     dashboard: bool = typer.Option(True, help="Show live dashboard"),
     config: Optional[Path] = typer.Option(None, help="Path to config file"),
     mock: bool = typer.Option(False, "--mock", help="Use mock node (no hardware)"),
+    sim: bool = typer.Option(False, "--sim", help="Run in simulation mode (virtual world)"),
+    map_file: Optional[Path] = typer.Option(None, "--map", help="Path to map file for simulation"),
+    spawn: Optional[str] = typer.Option(None, "--spawn", help="Spawn position as x,y,theta (e.g., '0.5,0.5,0')"),
     discover: bool = typer.Option(False, "--discover", help="Auto-discover ESP32 on network"),
     verbosity: int = typer.Option(1, "-v", "--verbosity", min=1, max=3, help="Log verbosity: 1=minimal, 2=normal, 3=debug"),
 ):
@@ -40,6 +43,8 @@ def run(
         nimbus run --behavior idle --no-dashboard
         nimbus run --discover --behavior wander    # Auto-discover ESP32
         nimbus run -v 3                            # Debug verbosity
+        nimbus run --sim --behavior wander         # Simulation mode
+        nimbus run --sim --map path/to/map.txt     # Custom map
     """
     # Set log verbosity
     from nimbus.core.xrce.logger import set_verbosity
@@ -71,20 +76,57 @@ def run(
             for dev in devices:
                 console.print(f"  - {dev['ip']} ({dev['latency_ms']:.0f}ms)")
 
+    # Parse spawn position if provided
+    spawn_x, spawn_y, spawn_theta = None, None, None
+    if spawn:
+        try:
+            parts = [float(p.strip()) for p in spawn.split(",")]
+            if len(parts) >= 2:
+                spawn_x, spawn_y = parts[0], parts[1]
+            if len(parts) >= 3:
+                spawn_theta = parts[2]
+        except ValueError:
+            console.print(f"[red]Invalid spawn format:[/red] {spawn}")
+            console.print("Expected format: x,y or x,y,theta (e.g., '0.5,0.5,0')")
+            raise typer.Exit(1)
+
     # Banner
     console.print(Panel.fit(
         "[bold blue]Nimbus[/bold blue] Robot Controller",
         subtitle="Press Ctrl+C to stop"
     ))
 
-    if not mock:
+    if sim:
+        console.print("[green]Mode:[/green] Simulation")
+        if map_file:
+            console.print(f"[green]Map:[/green] {map_file}")
+        else:
+            console.print("[green]Map:[/green] empty_room (default)")
+    elif not mock:
         console.print("[green]Mode:[/green] XRCE Agent (waiting for ESP32)")
 
     # Create runner
+    from nimbus.core.config import NimbusConfig
+
+    # Load config and apply simulation settings
+    nimbus_config = NimbusConfig.load(config) if config else NimbusConfig.load()
+    if sim:
+        nimbus_config.simulation.enabled = True
+        if map_file:
+            nimbus_config.simulation.map_file = str(map_file)
+        if spawn_x is not None:
+            nimbus_config.simulation.spawn_x = spawn_x
+        if spawn_y is not None:
+            nimbus_config.simulation.spawn_y = spawn_y
+        if spawn_theta is not None:
+            nimbus_config.simulation.spawn_theta = spawn_theta
+
     runner = create_runner(
         config_path=str(config) if config else None,
         mock=mock,
+        sim=sim,
     )
+    runner.config = nimbus_config  # Apply updated config
 
     # Set initial behavior
     if behavior != "idle":

@@ -74,6 +74,19 @@ class AgentConfig:
 
 
 @dataclass
+class SimulationConfig:
+    """Simulation mode configuration."""
+
+    enabled: bool = False
+    map_file: Optional[str] = None      # Path to custom map file
+    map_template: str = "empty_room"    # Built-in template name
+    tick_rate: float = 10.0             # Physics update rate (Hz)
+    spawn_x: Optional[float] = None     # Override spawn X
+    spawn_y: Optional[float] = None     # Override spawn Y
+    spawn_theta: Optional[float] = None # Override spawn theta
+
+
+@dataclass
 class NimbusConfig:
     """
     Top-level configuration container.
@@ -87,6 +100,7 @@ class NimbusConfig:
     navigation: NavigationConfig = field(default_factory=NavigationConfig)
     api: APIConfig = field(default_factory=APIConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    simulation: SimulationConfig = field(default_factory=SimulationConfig)
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "NimbusConfig":
@@ -134,6 +148,7 @@ class NimbusConfig:
             ("navigation", config.navigation),
             ("api", config.api),
             ("agent", config.agent),
+            ("simulation", config.simulation),
         ]
 
         for section_name, section_obj in sections:
