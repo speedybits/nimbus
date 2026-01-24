@@ -299,14 +299,16 @@ class SimulatedWorld:
             max_range: Maximum range in meters
 
         Returns:
-            List of distances for each ray (index 0 = directly forward)
+            List of distances for each ray (index 0 = directly backward,
+            index 180 = directly forward, matching real LIDAR convention)
         """
         ranges = []
 
         for i in range(num_rays):
-            # Calculate ray angle (0 = forward, CCW positive)
-            # LIDAR convention: index 0 is directly forward
-            angle = self.robot_theta + (i * 2 * math.pi / num_rays)
+            # Calculate ray angle
+            # Real LIDAR convention: index 0 = backward, index 180 = forward
+            # Add pi to offset so index 0 points backward
+            angle = self.robot_theta + math.pi + (i * 2 * math.pi / num_rays)
 
             # Cast the ray
             distance = self._cast_ray(

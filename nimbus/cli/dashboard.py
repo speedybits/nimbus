@@ -98,8 +98,8 @@ class LiveDashboard:
     +------------------+------------------+
     |     SENSORS      |      STATUS      |
     +------------------+------------------+
-    |           LIDAR VISUALIZATION       |
-    +--------------------------------------+
+    |    LIDAR VIEW    |     MAP VIEW     |
+    +------------------+------------------+
     |             SHORTCUTS                |
     +--------------------------------------+
     |               LOG                    |
@@ -141,14 +141,20 @@ class LiveDashboard:
         layout.split_column(
             Layout(name="header", size=3),
             Layout(name="top", size=10),
-            Layout(name="lidar", size=12),
+            Layout(name="views", size=14),  # Combined LIDAR + Map row
             Layout(name="shortcuts", size=3),
-            Layout(name="logs", size=10),  # Unified log panel
+            Layout(name="logs", size=8),  # Reduced for views row
         )
 
         layout["top"].split_row(
             Layout(name="sensors"),
             Layout(name="status"),
+        )
+
+        # Split views into LIDAR and Map side-by-side
+        layout["views"].split_row(
+            Layout(name="lidar"),
+            Layout(name="map"),
         )
 
         # Header
@@ -206,6 +212,7 @@ class LiveDashboard:
         self._update_sensors(context)
         self._update_status(context)
         self._update_lidar(context)
+        self._update_map(context)
         self._update_shortcuts()
         self._update_logs()
 
@@ -227,8 +234,12 @@ class LiveDashboard:
         self._layout["sensors"].update(Panel(waiting_text, title="Connecting...", border_style="yellow"))
         self._layout["status"].update(Panel(Text("", justify="center"), title="Status", border_style="dim"))
         self._layout["lidar"].update(Panel(
-            Text("\n\n      Waiting for LIDAR data...", style="dim", justify="center"),
+            Text("\n\n   Waiting for LIDAR...", style="dim", justify="center"),
             title="LIDAR View", border_style="dim"
+        ))
+        self._layout["map"].update(Panel(
+            Text("\n\n   Waiting for data...", style="dim", justify="center"),
+            title="Map View", border_style="dim"
         ))
         self._layout["shortcuts"].update(Panel(
             Text("[dim]Q: quit[/dim]", justify="center"),
@@ -329,11 +340,12 @@ class LiveDashboard:
 
     def _lidar_to_world(self, index: int, distance: float, pose, deg_per_reading: float) -> tuple:
         """Convert LIDAR polar reading to world coordinates."""
-        # LIDAR angle in robot frame (0 = front, CCW positive)
+        # LIDAR angle in robot frame (index 0 = back, index 180 = front)
+        # Add pi to convert correctly to world frame
         lidar_angle_rad = math.radians(index * deg_per_reading)
 
         # Convert to world frame using robot heading
-        world_angle = pose.theta + lidar_angle_rad
+        world_angle = pose.theta + math.pi + lidar_angle_rad
 
         world_x = pose.x + distance * math.cos(world_angle)
         world_y = pose.y + distance * math.sin(world_angle)
@@ -346,7 +358,7 @@ class LiveDashboard:
 
         In explore mode, points in visited cells are colored blue.
         """
-        width = 60
+        width = 29
         height = 12
         canvas = [[' '] * width for _ in range(height)]
         canvas_styles = [[None] * width for _ in range(height)]
@@ -429,6 +441,140 @@ class LiveDashboard:
         lines.append(Text(f"  Closest: {closest:.2f}m  |  Scale: 1 char = {1/scale:.2f}m"))
 
         # Join lines with newlines
+        result = Text()
+        for i, line in enumerate(lines):
+            result.append_text(line)
+            if i < len(lines) - 1:
+                result.append("\n")
+
+        return result
+
+    def _update_map(self, context) -> None:
+        """Update world map visualization."""
+        obstacle_map = self.runner.obstacle_map
+        sensors = context.sensors
+
+        if not sensors or obstacle_map.num_obstacles == 0 and obstacle_map.num_visited == 0:
+            empty_msg = Text("\n\n   Building map...", style="dim", justify="center")
+            self._layout["map"].update(Panel(empty_msg, title="Map View", border_style="dim"))
+            return
+
+        # Render the map
+        viz = self._render_map_ascii(obstacle_map, sensors.pose)
+        self._layout["map"].update(Panel(viz, title="Map View", border_style="green"))
+
+    def _render_map_ascii(self, obstacle_map, robot_pose) -> Text:
+        """
+        Render accumulated obstacle map as ASCII.
+
+        Symbols:
+          ' ' = unknown/unexplored
+          '.' = free space (dim)
+          '#' = high-confidence obstacle (red)
+          '+' = lower-confidence obstacle (yellow)
+          '~' = robot trail (cyan)
+          'R' = robot position (bold green)
+        """
+        width = 29
+        height = 12
+        canvas = [[' '] * width for _ in range(height)]
+        canvas_styles = [[None] * width for _ in range(height)]
+
+        # Get map bounds with padding
+        min_x, min_y, max_x, max_y = obstacle_map.get_bounds()
+
+        # Add padding (0.5m)
+        padding = 0.5
+        min_x -= padding
+        min_y -= padding
+        max_x += padding
+        max_y += padding
+
+        # Calculate scale to fit canvas
+        # Account for character aspect ratio (chars are ~2x taller than wide)
+        world_width = max_x - min_x
+        world_height = max_y - min_y
+
+        if world_width < 0.1:
+            world_width = 2.0
+        if world_height < 0.1:
+            world_height = 2.0
+
+        # Scale factors (divide by 2 for width to account for character aspect ratio)
+        scale_x = (width - 2) / world_width / 2.0
+        scale_y = (height - 2) / world_height
+
+        # Use the smaller scale to preserve aspect ratio
+        scale = min(scale_x, scale_y)
+
+        # Calculate center offset
+        center_x = (min_x + max_x) / 2
+        center_y = (min_y + max_y) / 2
+
+        def world_to_canvas(wx: float, wy: float) -> tuple[int, int]:
+            """Convert world coordinates to canvas coordinates."""
+            # Center on explored area, apply scale, account for aspect ratio
+            cx = int((wx - center_x) * scale * 2 + width / 2)
+            cy = int(height / 2 - (wy - center_y) * scale)  # Y is inverted
+            return (cx, cy)
+
+        # Draw visited cells (free space)
+        for cell in obstacle_map.get_visited():
+            cell_x, cell_y = cell
+            # Convert cell center to world coords
+            wx = (cell_x + 0.5) * obstacle_map.config.cell_size
+            wy = (cell_y + 0.5) * obstacle_map.config.cell_size
+            cx, cy = world_to_canvas(wx, wy)
+            if 0 <= cx < width and 0 <= cy < height:
+                if canvas[cy][cx] == ' ':  # Don't overwrite obstacles
+                    canvas[cy][cx] = '.'
+                    canvas_styles[cy][cx] = "dim"
+
+        # Draw obstacles
+        for cell, confidence in obstacle_map.get_obstacles().items():
+            cell_x, cell_y = cell
+            wx = (cell_x + 0.5) * obstacle_map.config.cell_size
+            wy = (cell_y + 0.5) * obstacle_map.config.cell_size
+            cx, cy = world_to_canvas(wx, wy)
+            if 0 <= cx < width and 0 <= cy < height:
+                if confidence >= 0.6:
+                    canvas[cy][cx] = '#'
+                    canvas_styles[cy][cx] = "red"
+                else:
+                    canvas[cy][cx] = '+'
+                    canvas_styles[cy][cx] = "yellow"
+
+        # Draw robot trail
+        trail = obstacle_map.get_robot_trail(max_points=30)
+        for wx, wy in trail[:-1]:  # Skip last point (current position)
+            cx, cy = world_to_canvas(wx, wy)
+            if 0 <= cx < width and 0 <= cy < height:
+                # Only draw trail on free space, not on obstacles
+                if canvas[cy][cx] in (' ', '.'):
+                    canvas[cy][cx] = '~'
+                    canvas_styles[cy][cx] = "cyan"
+
+        # Draw robot position
+        if robot_pose:
+            cx, cy = world_to_canvas(robot_pose.x, robot_pose.y)
+            if 0 <= cx < width and 0 <= cy < height:
+                canvas[cy][cx] = 'R'
+                canvas_styles[cy][cx] = "bold green"
+
+        # Build Rich Text output
+        lines = []
+        for row, styles in zip(canvas, canvas_styles):
+            line = Text()
+            for char, style in zip(row, styles):
+                line.append(char, style=style)
+            lines.append(line)
+
+        # Add info line
+        obs_count = obstacle_map.num_obstacles
+        free_count = obstacle_map.num_visited
+        lines.append(Text(f" Obs:{obs_count} Free:{free_count}", style="dim"))
+
+        # Join lines
         result = Text()
         for i, line in enumerate(lines):
             result.append_text(line)

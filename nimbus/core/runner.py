@@ -22,6 +22,7 @@ from .state import RobotContext, RobotState, Pose2D, Velocity, SensorSnapshot
 from .config import NimbusConfig
 from nimbus.sensors.lidar import LidarProcessor
 from nimbus.sensors.odometry import OdometryProcessor, SensorFusion, create_twist_msg
+from nimbus.sensors.mapping import ObstacleMap
 from nimbus.navigation.safety import SafetyController, VelocitySmoother
 from nimbus.behaviors.base import BehaviorManager
 from nimbus.behaviors.idle import IdleBehavior
@@ -73,6 +74,9 @@ class NimbusRunner:
         self._lidar_processor = LidarProcessor()
         self._odom_processor = OdometryProcessor()
         self._fusion = SensorFusion()
+
+        # Obstacle map for dashboard visualization
+        self._obstacle_map = ObstacleMap()
 
         # Topic buffers (set during start)
         self._scan_buffer = None
@@ -295,6 +299,10 @@ class NimbusRunner:
 
         self._context.update_sensors(snapshot)
 
+        # Update obstacle map for dashboard visualization
+        if lidar_ranges and len(lidar_ranges) > 0:
+            self._obstacle_map.update(pose, lidar_ranges)
+
     def _send_velocity(self, linear: float, angular: float) -> None:
         """Send velocity command to motors."""
         if self._cmd_publisher:
@@ -458,6 +466,11 @@ class NimbusRunner:
     def safety_status(self) -> dict:
         """Get current safety status."""
         return self._safety.status
+
+    @property
+    def obstacle_map(self) -> ObstacleMap:
+        """Get the obstacle map for visualization."""
+        return self._obstacle_map
 
 
 def create_runner(
