@@ -352,6 +352,47 @@ class LidarProcessor:
         """Get min range in named sectors (front, left, etc.)"""
 ```
 
+**LIDAR Angle Convention:**
+
+The LIDAR uses the following index convention:
+- Index 0 = backward (180° from robot heading)
+- Index 90 = right
+- Index 180 = forward (robot heading direction)
+- Index 270 = left
+
+This matches the physical LIDAR mounting on the robot.
+
+### Obstacle Mapping (`sensors/mapping.py`)
+
+Accumulates LIDAR data into a persistent world map:
+
+```python
+class ObstacleMap:
+    """
+    Sparse grid map of obstacles and free space.
+
+    Storage:
+    - _obstacles: dict[tuple[int,int], float]  # cell -> confidence
+    - _visited: set[tuple[int,int]]            # free space cells
+    - _robot_trail: list[tuple[float,float]]   # position history
+    """
+
+    def update(self, pose: Pose2D, lidar_ranges: tuple[float, ...]) -> None:
+        """Update map with new LIDAR scan."""
+
+    def get_bounds(self) -> tuple[float, float, float, float]:
+        """Get (min_x, min_y, max_x, max_y) of known space."""
+
+    def get_robot_trail(self, max_points: int = 50) -> list[tuple[float, float]]:
+        """Get recent robot positions for trail rendering."""
+```
+
+**Key features:**
+- Sparse grid storage (only stores occupied/visited cells)
+- Ray casting marks cells along LIDAR rays as free space
+- Confidence tracking: repeated hits increase obstacle confidence
+- Auto-expanding bounds as exploration continues
+
 ### Vector Field Histogram (`navigation/vfh.py`)
 
 VFH algorithm for obstacle avoidance:

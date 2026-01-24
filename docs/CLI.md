@@ -92,7 +92,7 @@ nimbus run -v 3 --behavior wander
 
 ### Live Dashboard
 
-When running with `--dashboard` (default), you'll see a live terminal interface:
+When running with `--dashboard` (default), you'll see a live terminal interface with side-by-side LIDAR and Map views:
 
 ```
 ╭─────────────────────────── NIMBUS DASHBOARD ────────────────────────────╮
@@ -104,20 +104,41 @@ When running with `--dashboard` (default), you'll see a live terminal interface:
 │ Linear Vel:   0.20 m/s                   │ Safety:     OK               │
 │ Angular Vel:  0.05 rad/s                 │                              │
 │ Closest:      1.25 m                     │                              │
-├──────────────────────────── LIDAR View ─────────────────────────────────┤
-│                                                                          │
-│                          .  .  .                                         │
-│                    .  .        .  .                                      │
-│                 .                    .                                   │
-│               .          ^            .                                  │
-│               .          R            .                                  │
-│                 .                    .                                   │
-│                    .  .        .  .                                      │
-│                          .  .  .                                         │
-│                                                                          │
-│   Closest: 1.25m  |  Scale: 1 char = 0.15m                              │
+├────────── LIDAR View ────────┬─────────── Map View ─────────────────────┤
+│        .  .  .               │  . . . . . # # . .                       │
+│    .  .        .  .          │  . . ~ ~ ~ # # . .                       │
+│  .                    .      │  . . ~ . . . . . .                       │
+│ .          ^            .    │  . . ~ . R . . . .                       │
+│ .          R            .    │  . . ~ . . . . . .                       │
+│  .                    .      │  # # # # . . . . .                       │
+│    .  .        .  .          │  . . . . . . . . .                       │
+│        .  .  .               │                                          │
+│                              │  Obs:42 Free:186                         │
+│  Closest: 1.25m              │                                          │
+├──────────────────────────────┴──────────────────────────────────────────┤
+│                            Shortcuts                                     │
 ╰──────────────────────────────────────────────────────────────────────────╯
 ```
+
+**Dashboard Views:**
+
+| View | Description |
+|------|-------------|
+| **LIDAR View** | Real-time robot-centric view of obstacles. `R` = robot, `^` = forward direction, `.` = detected obstacle |
+| **Map View** | Accumulated world map. `R` = robot, `~` = trail, `#` = obstacle, `.` = free space |
+
+**Map View Symbols:**
+
+| Symbol | Meaning |
+|--------|---------|
+| ` ` (space) | Unknown/unexplored |
+| `.` (dim) | Free space (LIDAR ray passed through) |
+| `#` (red) | High-confidence obstacle |
+| `+` (yellow) | Lower-confidence obstacle |
+| `~` (cyan) | Robot trail (recent path) |
+| `R` (green) | Current robot position |
+
+The map auto-zooms as exploration expands and stays centered on the explored area.
 
 Press `Ctrl+C` to stop.
 

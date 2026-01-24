@@ -66,7 +66,7 @@ No ROS2 or Docker required!
                               │
 ┌─────────────────────────────────────────────────────────────┐
 │                    Sensor Layer                             │
-│         LIDAR Processor │ Odometry │ IMU (optional)         │
+│     LIDAR Processor │ Odometry │ Obstacle Map │ IMU (opt)   │
 └─────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────┐
@@ -194,11 +194,12 @@ Nimbus includes a hardware safety layer that **cannot be bypassed**:
 nimbus/
 ├── nimbus/
 │   ├── core/           # XRCE agent, state machine, config
-│   ├── sensors/        # LIDAR processing, odometry
+│   ├── sensors/        # LIDAR processing, odometry, obstacle mapping
 │   ├── navigation/     # VFH algorithm, safety controller
 │   ├── behaviors/      # idle, wander, goto, patrol
 │   ├── api/            # FastAPI REST, WebSocket
 │   ├── cli/            # Typer CLI, Rich dashboard
+│   ├── sim/            # Simulation mode (virtual world)
 │   └── tests/          # pytest test suite
 ├── docs/               # Documentation
 ├── pyproject.toml      # Package configuration
