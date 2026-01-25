@@ -26,7 +26,7 @@ class StatusResponse(BaseModel):
     state: str = Field(..., description="Current state: IDLE, NAVIGATING, etc.")
     pose: Pose = Field(default_factory=Pose, description="Current position")
     velocity: VelocityModel = Field(default_factory=VelocityModel, description="Current velocity")
-    closest_obstacle: float = Field(..., description="Distance to nearest obstacle in meters")
+    closest_obstacle: Optional[float] = Field(None, description="Distance to nearest obstacle in meters")
     current_behavior: Optional[str] = Field(None, description="Active behavior name")
     target: Optional[Pose] = Field(None, description="Navigation target if set")
 
@@ -36,9 +36,9 @@ class SensorResponse(BaseModel):
     timestamp: str = Field(..., description="ISO timestamp of reading")
     pose: Pose = Field(..., description="Robot pose")
     velocity: VelocityModel = Field(..., description="Robot velocity")
-    closest_obstacle: float = Field(..., description="Nearest obstacle distance")
-    obstacle_direction: float = Field(..., description="Angle to nearest obstacle (radians)")
-    lidar_histogram: list[float] = Field(..., description="Polar histogram (72 sectors)")
+    closest_obstacle: Optional[float] = Field(None, description="Nearest obstacle distance")
+    obstacle_direction: Optional[float] = Field(None, description="Angle to nearest obstacle (radians)")
+    lidar_histogram: list[Optional[float]] = Field(default_factory=list, description="Polar histogram (72 sectors)")
 
 
 class NavigateRequest(BaseModel):
