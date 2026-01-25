@@ -24,21 +24,42 @@ from datetime import datetime
 
 
 class LogBuffer:
-    """Circular buffer for log messages."""
+    """
+    Thread-safe log buffer using queue.Queue.
 
-    def __init__(self, max_lines: int = 8):
-        self.lines = deque(maxlen=max_lines)
+    Uses Python's queue.Queue for thread-safe producer/consumer pattern.
+    Any thread can append; the main thread drains into display buffer.
+    """
+
+    def __init__(self, max_lines: int = 12):
+        self._queue = queue.Queue()  # Thread-safe inbox
+        self._lines = deque(maxlen=max_lines)  # Display buffer (main thread only)
 
     def append(self, message: str) -> None:
-        """Add a timestamped message to the log."""
+        """Add message from any thread (non-blocking)."""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.lines.append(f"[dim]{timestamp}[/dim] {message}")
+        self._queue.put(f"[dim]{timestamp}[/dim] {message}")
+
+    def _drain(self) -> None:
+        """Move queued messages to display buffer (call from main thread)."""
+        while True:
+            try:
+                msg = self._queue.get_nowait()
+                self._lines.append(msg)
+            except queue.Empty:
+                break
 
     def get_text(self) -> str:
-        """Get all log lines as a single string."""
-        if not self.lines:
+        """Get display text (main thread only)."""
+        self._drain()
+        if not self._lines:
             return "[dim]No events yet[/dim]"
-        return "\n".join(self.lines)
+        return "\n".join(self._lines)
+
+    def get_recent(self, count: int = 20) -> list:
+        """Get recent lines as list (main thread only)."""
+        self._drain()
+        return list(self._lines)[-count:]
 
 
 class KeyboardHandler:
@@ -769,7 +790,7 @@ class LiveDashboard:
                     "theta": context.target.theta
                 } if context.target else None
             },
-            "logs": list(self._log.lines)[-20:],
+            "logs": self._log.get_recent(20),
             "available_behaviors": list(self.runner.available_behaviors),
             "api_port": 8080
         }

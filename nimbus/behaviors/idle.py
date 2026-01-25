@@ -5,7 +5,7 @@ The simplest behavior: do nothing, wait for commands.
 """
 
 from typing import Optional
-from nimbus.core.state import RobotContext, Velocity
+from nimbus.core.state import RobotContext, RobotState, Velocity
 from .base import Behavior
 
 
@@ -24,5 +24,8 @@ class IdleBehavior(Behavior):
     priority = 0  # Lowest priority
 
     def compute(self, context: RobotContext) -> Optional[Velocity]:
-        """Return zero velocity - stay still."""
+        """Return zero velocity and set state to IDLE."""
+        # Ensure state reflects idle (unless in emergency stop)
+        if context.state != RobotState.EMERGENCY_STOP:
+            context.set_state(RobotState.IDLE)
         return Velocity.stop()
