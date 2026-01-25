@@ -8,7 +8,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from typing import Optional
+import asyncio
 import threading
+import time
 import uvicorn
 
 from .schemas import (
@@ -17,6 +19,8 @@ from .schemas import (
     BehaviorResponse,
     HealthResponse,
     SensorResponse,
+    ClaudeCommandResponse,
+    ClaudeStatusResponse,
 )
 
 # Global reference to runner (set by start_api_background)
@@ -328,6 +332,164 @@ def create_app() -> FastAPI:
             return {"status": "deleted", "name": name}
         else:
             raise HTTPException(404, detail=f"Memory not found: {name}")
+
+    # --- Claude Control Endpoints ---
+
+    @app.post("/api/claude/move", response_model=ClaudeCommandResponse)
+    async def claude_move(
+        distance: float,
+        speed: float = 0.15,
+        timeout: float = 30.0
+    ):
+        """
+        Move the robot forward/backward by a specified distance.
+
+        Args:
+            distance: Distance in meters (positive=forward, negative=backward)
+            speed: Speed in m/s (default 0.15)
+            timeout: Timeout in seconds (default 30)
+
+        Returns:
+            ClaudeCommandResponse with result and actual distance traveled.
+        """
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        from nimbus.behaviors.claude_control import (
+            ClaudeControlBehavior,
+            create_move_command,
+        )
+
+        # Get or activate claude_control behavior
+        behavior = _runner._behavior_manager.get_behavior("claude_control")
+        if not behavior or not isinstance(behavior, ClaudeControlBehavior):
+            raise HTTPException(500, detail="Claude control behavior not found")
+
+        # Auto-activate if not active
+        if _runner.current_behavior != "claude_control":
+            _runner.set_behavior("claude_control")
+
+        # Create and set command
+        command = create_move_command(distance, speed, timeout)
+        behavior.set_command(command)
+
+        # Wait for completion in executor to not block event loop
+        loop = asyncio.get_event_loop()
+        completed = await loop.run_in_executor(
+            None,
+            lambda: behavior.wait_for_completion(timeout=timeout + 1.0)
+        )
+
+        result = behavior.get_result()
+        if not result:
+            raise HTTPException(500, detail="No result from command")
+
+        duration = time.time() - result.start_time if result.start_time else 0
+
+        return ClaudeCommandResponse(
+            success=result.result == "completed",
+            result=result.result or "unknown",
+            target=result.target,
+            actual=result.actual or 0.0,
+            duration=duration,
+        )
+
+    @app.post("/api/claude/turn", response_model=ClaudeCommandResponse)
+    async def claude_turn(
+        degrees: float,
+        speed: float = 0.5,
+        timeout: float = 30.0
+    ):
+        """
+        Turn the robot by a specified angle.
+
+        Args:
+            degrees: Rotation in degrees (positive=left/CCW, negative=right/CW)
+            speed: Speed in rad/s (default 0.5)
+            timeout: Timeout in seconds (default 30)
+
+        Returns:
+            ClaudeCommandResponse with result and actual rotation achieved.
+        """
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        from nimbus.behaviors.claude_control import (
+            ClaudeControlBehavior,
+            create_turn_command,
+        )
+
+        # Get or activate claude_control behavior
+        behavior = _runner._behavior_manager.get_behavior("claude_control")
+        if not behavior or not isinstance(behavior, ClaudeControlBehavior):
+            raise HTTPException(500, detail="Claude control behavior not found")
+
+        # Auto-activate if not active
+        if _runner.current_behavior != "claude_control":
+            _runner.set_behavior("claude_control")
+
+        # Create and set command
+        command = create_turn_command(degrees, speed, timeout)
+        behavior.set_command(command)
+
+        # Wait for completion in executor to not block event loop
+        loop = asyncio.get_event_loop()
+        completed = await loop.run_in_executor(
+            None,
+            lambda: behavior.wait_for_completion(timeout=timeout + 1.0)
+        )
+
+        result = behavior.get_result()
+        if not result:
+            raise HTTPException(500, detail="No result from command")
+
+        duration = time.time() - result.start_time if result.start_time else 0
+
+        return ClaudeCommandResponse(
+            success=result.result == "completed",
+            result=result.result or "unknown",
+            target=result.target,
+            actual=result.actual or 0.0,
+            duration=duration,
+        )
+
+    @app.post("/api/claude/stop")
+    async def claude_stop():
+        """Stop any in-progress Claude control command."""
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        from nimbus.behaviors.claude_control import ClaudeControlBehavior
+
+        behavior = _runner._behavior_manager.get_behavior("claude_control")
+        if behavior and isinstance(behavior, ClaudeControlBehavior):
+            result = behavior.stop_command()
+            if result:
+                return {
+                    "status": "stopped",
+                    "command_type": result.command_type,
+                    "actual": result.actual,
+                }
+
+        return {"status": "no_command"}
+
+    @app.get("/api/claude/status", response_model=ClaudeStatusResponse)
+    async def claude_status():
+        """Get current Claude control status."""
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        from nimbus.behaviors.claude_control import ClaudeControlBehavior
+
+        behavior = _runner._behavior_manager.get_behavior("claude_control")
+        if not behavior or not isinstance(behavior, ClaudeControlBehavior):
+            return ClaudeStatusResponse(state="unavailable", command=None)
+
+        status = behavior.get_status()
+        return ClaudeStatusResponse(
+            state=status["state"],
+            command=status["command"],
+        )
 
     return app
 

@@ -32,6 +32,7 @@ from nimbus.behaviors.ai_explore import AIExploreBehavior
 from nimbus.behaviors.explore import ExploreBehavior
 from nimbus.behaviors.pet import PetBehavior
 from nimbus.behaviors.motor_test import MotorTestBehavior
+from nimbus.behaviors.claude_control import ClaudeControlBehavior
 
 
 class NimbusRunner:
@@ -115,6 +116,7 @@ class NimbusRunner:
         self._behavior_manager.register(AIExploreBehavior())
         self._behavior_manager.register(PetBehavior())
         self._behavior_manager.register(MotorTestBehavior())
+        self._behavior_manager.register(ClaudeControlBehavior())
 
     def _setup_signal_handlers(self) -> None:
         """Setup SIGINT/SIGTERM handlers for graceful shutdown."""

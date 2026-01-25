@@ -115,6 +115,12 @@ Motor control endpoints:
 - `GET /api/motor_test/velocity` - Get current velocity setting
 - `POST /api/behavior/motor_test` - Switch to motor_test mode
 
+Claude control endpoints (blocking API for precise movement):
+- `POST /api/claude/move?distance=0.5&speed=0.15&timeout=30` - Move forward/backward (meters)
+- `POST /api/claude/turn?degrees=90&speed=0.5&timeout=30` - Turn left/right (degrees)
+- `POST /api/claude/stop` - Cancel current command
+- `GET /api/claude/status` - Get current command status
+
 ## Motor Control
 
 Direct motor control via CLI (requires nimbus running):

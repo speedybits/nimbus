@@ -69,3 +69,18 @@ class TelemetryData(BaseModel):
     velocity: VelocityModel
     closest_obstacle: float
     lidar_histogram: list[float]
+
+
+class ClaudeCommandResponse(BaseModel):
+    """Response for Claude control commands."""
+    success: bool = Field(..., description="Whether command completed successfully")
+    result: str = Field(..., description="Result: completed, timeout, cancelled, obstacle")
+    target: float = Field(..., description="Requested distance (m) or rotation (degrees)")
+    actual: float = Field(..., description="Achieved distance (m) or rotation (degrees)")
+    duration: float = Field(..., description="Time elapsed in seconds")
+
+
+class ClaudeStatusResponse(BaseModel):
+    """Status of Claude control behavior."""
+    state: str = Field(..., description="Current state: idle, moving, turning, complete, error")
+    command: Optional[dict] = Field(None, description="Current command details if active")
