@@ -32,6 +32,7 @@ from nimbus.behaviors.ai_explore import AIExploreBehavior
 from nimbus.behaviors.explore import ExploreBehavior
 from nimbus.behaviors.pet import PetBehavior
 from nimbus.behaviors.motor_test import MotorTestBehavior
+from nimbus.behaviors.claude_control import ClaudeControlBehavior
 
 
 class NimbusRunner:
@@ -115,6 +116,7 @@ class NimbusRunner:
         self._behavior_manager.register(AIExploreBehavior())
         self._behavior_manager.register(PetBehavior())
         self._behavior_manager.register(MotorTestBehavior())
+        self._behavior_manager.register(ClaudeControlBehavior())
 
     def _setup_signal_handlers(self) -> None:
         """Setup SIGINT/SIGTERM handlers for graceful shutdown."""
@@ -354,6 +356,9 @@ class NimbusRunner:
         success = self._behavior_manager.activate(name)
         if success:
             self._context.set_behavior(name)
+            # Clear emergency stop when explicitly setting a new behavior
+            if self._context.state == RobotState.EMERGENCY_STOP and name != "idle":
+                self._context.set_state(RobotState.IDLE)
             # Reset smoother to immediately apply new behavior's velocity
             # (prevents residual motion from previous behavior)
             self._smoother.reset()
@@ -457,10 +462,10 @@ class NimbusRunner:
         return None
 
     def emergency_stop(self) -> None:
-        """Trigger emergency stop."""
+        """Trigger emergency stop - halt motion and switch to idle."""
         self._context.set_state(RobotState.EMERGENCY_STOP)
-        self._send_stop()
-        self._smoother.reset()
+        self.set_behavior("idle")
+        self._reliable_stop(attempts=3, delay=0.03)
 
     @property
     def safety_status(self) -> dict:

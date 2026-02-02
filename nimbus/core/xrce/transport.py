@@ -117,6 +117,7 @@ class UDPTransport:
         Send data to ESP32 with exponential backoff retry.
 
         Retries continuously with exponential backoff until max_time is reached.
+        Releases lock between retries to avoid blocking receive thread.
 
         Args:
             data: Bytes to send
@@ -131,40 +132,40 @@ class UDPTransport:
         """
         import time as _time
 
+        # Get socket and target under lock, then release for send attempts
         with self._lock:
             if not self._socket:
                 return False
-
+            sock = self._socket
             target = addr or self._client_addr
             if not target:
                 return False
 
-            start_time = _time.time()
-            attempt = 0
-            delay = base_delay
-            last_error = None
+        # Retry loop without holding lock (allows receive to proceed)
+        start_time = _time.time()
+        attempt = 0
+        delay = base_delay
 
-            while True:
-                try:
-                    self._socket.sendto(data, target)
-                    return True
-                except Exception as e:
-                    last_error = e
-                    attempt += 1
-                    elapsed = _time.time() - start_time
+        while True:
+            try:
+                sock.sendto(data, target)
+                return True
+            except Exception as e:
+                attempt += 1
+                elapsed = _time.time() - start_time
 
-                    if elapsed >= max_time:
-                        assert_comm(
-                            "T3", False,
-                            f"Send failed after {attempt} attempts ({elapsed:.2f}s): {e}",
-                            "red", 5.0,
-                            level=LogLevel.DEBUG
-                        )
-                        return False
+                if elapsed >= max_time:
+                    assert_comm(
+                        "T3", False,
+                        f"Send failed after {attempt} attempts ({elapsed:.2f}s): {e}",
+                        "red", 5.0,
+                        level=LogLevel.DEBUG
+                    )
+                    return False
 
-                    # Exponential backoff with cap
-                    _time.sleep(delay)
-                    delay = min(delay * 2, max_delay)
+                # Exponential backoff (no lock held during sleep)
+                _time.sleep(delay)
+                delay = min(delay * 2, max_delay)
 
     @property
     def is_open(self) -> bool:

@@ -26,7 +26,7 @@ class StatusResponse(BaseModel):
     state: str = Field(..., description="Current state: IDLE, NAVIGATING, etc.")
     pose: Pose = Field(default_factory=Pose, description="Current position")
     velocity: VelocityModel = Field(default_factory=VelocityModel, description="Current velocity")
-    closest_obstacle: float = Field(..., description="Distance to nearest obstacle in meters")
+    closest_obstacle: Optional[float] = Field(None, description="Distance to nearest obstacle in meters")
     current_behavior: Optional[str] = Field(None, description="Active behavior name")
     target: Optional[Pose] = Field(None, description="Navigation target if set")
 
@@ -36,9 +36,11 @@ class SensorResponse(BaseModel):
     timestamp: str = Field(..., description="ISO timestamp of reading")
     pose: Pose = Field(..., description="Robot pose")
     velocity: VelocityModel = Field(..., description="Robot velocity")
-    closest_obstacle: float = Field(..., description="Nearest obstacle distance")
-    obstacle_direction: float = Field(..., description="Angle to nearest obstacle (radians)")
-    lidar_histogram: list[float] = Field(..., description="Polar histogram (72 sectors)")
+    closest_obstacle: Optional[float] = Field(None, description="Nearest obstacle distance")
+    obstacle_direction: Optional[float] = Field(None, description="Angle to nearest obstacle (radians)")
+    lidar_histogram: list[Optional[float]] = Field(default_factory=list, description="Polar histogram (72 sectors)")
+    odom_age: Optional[float] = Field(None, description="Seconds since last odometry message")
+    odom_stale: Optional[bool] = Field(None, description="Whether odometry data is stale (>1s old)")
 
 
 class NavigateRequest(BaseModel):
@@ -69,3 +71,18 @@ class TelemetryData(BaseModel):
     velocity: VelocityModel
     closest_obstacle: float
     lidar_histogram: list[float]
+
+
+class ClaudeCommandResponse(BaseModel):
+    """Response for Claude control commands."""
+    success: bool = Field(..., description="Whether command completed successfully")
+    result: str = Field(..., description="Result: completed, timeout, cancelled, obstacle")
+    target: float = Field(..., description="Requested distance (m) or rotation (degrees)")
+    actual: float = Field(..., description="Achieved distance (m) or rotation (degrees)")
+    duration: float = Field(..., description="Time elapsed in seconds")
+
+
+class ClaudeStatusResponse(BaseModel):
+    """Status of Claude control behavior."""
+    state: str = Field(..., description="Current state: idle, moving, turning, complete, error")
+    command: Optional[dict] = Field(None, description="Current command details if active")

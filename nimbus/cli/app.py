@@ -544,7 +544,6 @@ def wifi_setup(
     password: Optional[str] = typer.Option(None, "--password", "-p", help="WiFi password"),
     port: Optional[str] = typer.Option(None, "--port", help="Serial port (auto-detect if not specified)"),
     agent_ip: Optional[str] = typer.Option(None, "--agent-ip", help="Agent IP (auto-detect if not specified)"),
-    agent_hostname: Optional[str] = typer.Option(None, "--agent-hostname", help="Agent hostname (e.g., myhost.local)"),
     agent_port: int = typer.Option(8090, "--agent-port", help="Agent UDP port"),
     domain_id: int = typer.Option(20, "--domain-id", help="ROS2 domain ID"),
     no_reboot: bool = typer.Option(False, "--no-reboot", help="Don't reboot after configuration"),
@@ -559,16 +558,14 @@ def wifi_setup(
     Examples:
         nimbus wifi setup
         nimbus wifi setup --ssid MyNetwork --agent-ip 192.168.1.100
-        nimbus wifi setup --agent-hostname mycomputer.local
     """
     from nimbus.core.network import (
         find_serial_ports, get_local_ip, check_dialout_group,
-        find_serial_ports_delta, resolve_hostname, validate_ip_address
+        find_serial_ports_delta, validate_ip_address
     )
     from nimbus.core.robot_config import (
         RobotConfigurator, WiFiCredentials, UDPAgentConfig, TRANSPORT_WIFI_UDP
     )
-    import socket
 
     console.print(Panel.fit(
         "[bold blue]Nimbus WiFi Setup Wizard[/bold blue]",
@@ -674,16 +671,7 @@ def wifi_setup(
 
     resolved_ip = None
 
-    if agent_hostname:
-        # User provided hostname via CLI
-        console.print(f"Using hostname: {agent_hostname}")
-        try:
-            resolved_ip = resolve_hostname(agent_hostname)
-            console.print(f"[green]✓[/green] Resolved to: {resolved_ip}")
-        except ValueError as e:
-            console.print(f"[red]Cannot resolve hostname:[/red] {e}")
-            raise typer.Exit(1)
-    elif agent_ip:
+    if agent_ip:
         # User provided IP via CLI
         if not validate_ip_address(agent_ip):
             console.print(f"[red]Invalid IP address format:[/red] {agent_ip}")
@@ -692,38 +680,22 @@ def wifi_setup(
     else:
         # Interactive selection
         detected_ip = get_local_ip()
-        local_hostname = socket.gethostname()
 
-        console.print("How should the robot connect to this computer?")
-        console.print(f"  [cyan]1)[/cyan] mDNS hostname: [bold]{local_hostname}.local[/bold] (recommended)")
-        console.print(f"  [cyan]2)[/cyan] Fixed IP address: [bold]{detected_ip}[/bold]")
-        console.print(f"  [cyan]3)[/cyan] Custom address")
+        console.print("Which IP address should the robot use to reach this computer?")
+        console.print(f"  [cyan]1)[/cyan] Detected IP: [bold]{detected_ip}[/bold] (recommended)")
+        console.print(f"  [cyan]2)[/cyan] Custom IP address")
 
         choice = typer.prompt("Select option", default="1")
 
         if choice == "1":
-            hostname = f"{local_hostname}.local"
-            console.print(f"Using mDNS hostname: {hostname}")
-            try:
-                resolved_ip = resolve_hostname(hostname)
-                console.print(f"[green]✓[/green] Resolved to: {resolved_ip}")
-            except ValueError as e:
-                console.print(f"[yellow]⚠[/yellow] Could not resolve mDNS hostname: {e}")
-                console.print("Using detected IP address instead.")
-                resolved_ip = detected_ip
-        elif choice == "2":
             resolved_ip = detected_ip
         else:
-            custom_addr = typer.prompt("Enter IP address or hostname")
-            if validate_ip_address(custom_addr):
-                resolved_ip = custom_addr
-            else:
-                try:
-                    resolved_ip = resolve_hostname(custom_addr)
-                    console.print(f"[green]✓[/green] Resolved to: {resolved_ip}")
-                except ValueError as e:
-                    console.print(f"[red]Cannot resolve address:[/red] {e}")
-                    raise typer.Exit(1)
+            while True:
+                custom_ip = typer.prompt("Enter IPv4 address")
+                if validate_ip_address(custom_ip):
+                    resolved_ip = custom_ip
+                    break
+                console.print("[red]Invalid IPv4 address format.[/red] Example: 192.168.1.100")
 
     console.print(f"[green]Agent IP:[/green] {resolved_ip}")
     console.print(f"[green]Agent Port:[/green] {agent_port}")

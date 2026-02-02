@@ -1,7 +1,7 @@
 """
 Network utilities for WiFi support.
 
-Provides IP detection, hostname resolution, and serial port discovery
+Provides IP detection, serial port discovery, and network scanning
 for configuring and communicating with Yahboom robots over WiFi.
 """
 
@@ -93,66 +93,6 @@ def _get_ip_via_socket() -> str:
         return ip
     except Exception:
         return "127.0.0.1"
-
-
-def resolve_hostname(hostname: str) -> str:
-    """
-    Resolve hostname to IP address.
-
-    Supports both regular hostnames and mDNS (.local) addresses.
-    If the hostname is already an IP address, returns it unchanged.
-
-    Args:
-        hostname: Hostname to resolve (e.g., "myhost.local" or "192.168.1.100")
-
-    Returns:
-        Resolved IP address
-
-    Raises:
-        ValueError: If hostname cannot be resolved
-    """
-    # Check if already an IP address
-    try:
-        socket.inet_aton(hostname)
-        return hostname
-    except socket.error:
-        pass
-
-    # Handle local machine hostname specially
-    local_hostname = socket.gethostname()
-    local_variants = [local_hostname, f"{local_hostname}.local", "localhost.local"]
-
-    if hostname in local_variants:
-        return get_local_ip()
-
-    # Standard hostname resolution
-    try:
-        ip = socket.gethostbyname(hostname)
-
-        # Check for virtual interface IPs that might be wrong
-        if hostname.endswith(".local") and _looks_like_virtual_ip(ip):
-            # This might be our local machine with wrong interface
-            if hostname == f"{local_hostname}.local":
-                return get_local_ip()
-
-        return ip
-
-    except socket.gaierror as e:
-        hint = ""
-        if hostname.endswith(".local"):
-            hint = (
-                "\nFor mDNS (.local) resolution:\n"
-                "1. Install avahi: sudo apt install avahi-daemon\n"
-                "2. Ensure target device advertises via mDNS\n"
-                "3. Both devices must be on same network"
-            )
-        raise ValueError(f"Cannot resolve hostname '{hostname}': {e}{hint}")
-
-
-def _looks_like_virtual_ip(ip: str) -> bool:
-    """Check if IP looks like it's from a virtual interface."""
-    virtual_prefixes = ["172.17.", "172.18.", "172.16.", "10.0."]
-    return any(ip.startswith(prefix) for prefix in virtual_prefixes)
 
 
 def find_serial_ports() -> List[str]:

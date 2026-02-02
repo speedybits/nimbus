@@ -145,6 +145,9 @@ class XRCEAgent:
         self._last_probe_time: float = 0.0
         self._probe_failures: int = 0
 
+        # Pending READ_DATA requests from ESP32 (obj_id -> request_id)
+        self._pending_read_requests: Dict[int, int] = {}
+
         # Duplicate CREATE_CLIENT detection
         self._last_create_client_time: float = 0.0
         self._last_create_client_key: Optional[bytes] = None
@@ -273,14 +276,22 @@ class XRCEAgent:
 
             # Find ESP32's datareader for this topic
             dr_id = self._entities.get_datareader_for_topic(normalized)
-            if dr_id is None and normalized == "/cmd_vel":
-                dr_id = 6400  # Fallback datareader ID for /cmd_vel
 
-            # IMPORTANT: ESP32 uses datareader_id + 256 in READ_DATA/DATA messages
-            # This offset is required for the ESP32 to recognize the DATA message
-            data_obj_id = dr_id + 256 if dr_id is not None else None
-            xrce_log(f"[yellow]PUBLISH {normalized}: dr_id={dr_id} data_obj_id={data_obj_id}[/yellow]", level=LogLevel.NORMAL)
-            if dr_id is None:
+            # Find ESP32's datareader for this topic
+            dr_id = self._entities.get_datareader_for_topic(normalized)
+
+            # For /cmd_vel: use READ_DATA entry if entity tracking found the datareader,
+            # otherwise use hardcoded fallback (verified to match ESP32's actual IDs).
+            # The +256 offset maps CREATE datareader ID to READ_DATA object ID.
+            if dr_id is not None:
+                data_obj_id = dr_id + 256
+                request_id = self._pending_read_requests.get(data_obj_id, 0)
+            elif normalized == "/cmd_vel":
+                # Hardcoded fallback — matches ESP32's /cmd_vel datareader.
+                # Verified: pending_read_requests[6656] = 1536
+                data_obj_id = 6656
+                request_id = self._pending_read_requests.get(6656, 1536)
+            else:
                 subscribed = self._entities.get_subscribed_topics()
                 assert_comm(
                     "PUB2", False,
@@ -290,13 +301,6 @@ class XRCEAgent:
                 )
                 return False
 
-            # Build and send DATA message
-            # Use request_id from READ_DATA if available (keyed by data_obj_id)
-            # Default to 1536 which is the typical READ_DATA request_id for /cmd_vel
-            request_id = 1536
-            if hasattr(self, '_pending_read_requests'):
-                request_id = self._pending_read_requests.get(data_obj_id, 1536)
-            xrce_log(f"[cyan]DATA: obj_id={data_obj_id} req_id={request_id}[/cyan]", level=LogLevel.NORMAL)
             seq = self._session.next_sequence()
             msg = build_data(data_obj_id, data, seq, request_id)
             # Log first DATA message for debugging (reset on restart)
@@ -524,11 +528,9 @@ class XRCEAgent:
 
         elif submsg_id == SubmessageId.CREATE:
             xrce_log(f"[bold magenta]Received CREATE submsg, seq={seq_num}[/bold magenta]", level=LogLevel.NORMAL)
-            # Skip duplicate/retransmitted CREATE messages
-            if not self._session.is_duplicate(submsg_id, seq_num):
-                self._handle_create(submsg)
-            else:
-                xrce_log(f"[dim]Skipping duplicate CREATE seq={seq_num}[/dim]", level=LogLevel.NORMAL)
+            # Always process CREATE — idempotent, and duplicate detection
+            # can incorrectly filter retransmissions after agent restart.
+            self._handle_create(submsg)
 
         elif submsg_id == SubmessageId.WRITE_DATA:
             self._handle_write_data(submsg)
@@ -537,9 +539,8 @@ class XRCEAgent:
             self._handle_heartbeat(submsg)
 
         elif submsg_id == SubmessageId.READ_DATA:
-            # Skip duplicate/retransmitted READ_DATA messages
-            if not self._session.is_duplicate(submsg_id, seq_num):
-                self._handle_read_data(submsg)
+            # Always process READ_DATA — idempotent (just stores request_id).
+            self._handle_read_data(submsg)
 
         elif submsg_id == SubmessageId.FRAGMENT:
             self._handle_fragment(submsg)
@@ -785,10 +786,8 @@ class XRCEAgent:
         request_id = struct.unpack('<H', submsg.payload[2:4])[0]
 
         # Store the request_id for this datareader so we can respond correctly
-        if not hasattr(self, '_pending_read_requests'):
-            self._pending_read_requests = {}
         self._pending_read_requests[raw_obj_id] = request_id
-        xrce_log(f"[cyan]READ_DATA: obj={raw_obj_id} req={request_id}[/cyan]", level=LogLevel.NORMAL)
+        xrce_log(f"[bold cyan]READ_DATA: obj={raw_obj_id} (0x{raw_obj_id:04x}) req={request_id} (0x{request_id:04x})[/bold cyan]", level=LogLevel.NORMAL)
 
     def _handle_fragment(self, submsg: ParsedSubmessage) -> None:
         """
@@ -911,6 +910,7 @@ class XRCEAgent:
     def _soft_reset(self) -> None:
         """Reset state without stopping agent - for reconnection."""
         self._entities.clear()
+        self._pending_read_requests.clear()
         self._fragment_buffer = b''
         self._fragment_count = 0
         self._fragment_start_time = 0.0

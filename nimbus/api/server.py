@@ -8,7 +8,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from typing import Optional
+import asyncio
 import threading
+import time
 import uvicorn
 
 from .schemas import (
@@ -17,6 +19,8 @@ from .schemas import (
     BehaviorResponse,
     HealthResponse,
     SensorResponse,
+    ClaudeCommandResponse,
+    ClaudeStatusResponse,
 )
 
 # Global reference to runner (set by start_api_background)
@@ -112,6 +116,13 @@ def create_app() -> FastAPI:
         def safe_float(v: float) -> float | None:
             return None if math.isinf(v) or math.isnan(v) else v
 
+        # Odom buffer diagnostics
+        odom_age = None
+        odom_stale = None
+        if hasattr(_runner, '_odom_buffer') and _runner._odom_buffer:
+            odom_age = safe_float(_runner._odom_buffer.age)
+            odom_stale = _runner._odom_buffer.is_stale
+
         return SensorResponse(
             timestamp=sensors.timestamp.isoformat(),
             pose={
@@ -126,6 +137,8 @@ def create_app() -> FastAPI:
             closest_obstacle=safe_float(sensors.closest_obstacle),
             obstacle_direction=sensors.obstacle_direction,
             lidar_histogram=[safe_float(r) for r in sensors.lidar_ranges[:72]],
+            odom_age=odom_age,
+            odom_stale=odom_stale,
         )
 
     @app.post("/api/navigate")
@@ -239,13 +252,64 @@ def create_app() -> FastAPI:
         agent = node._agent
         entities = agent._entities
 
+        # Publisher stats from node
+        pub_stats = {}
+        for topic, pub in node._publishers.items():
+            pub_stats[topic] = len(pub.published_messages)
+
+        # Agent-level publisher stats
+        agent_pub_stats = {}
+        for topic, info in agent._publishers.items():
+            agent_pub_stats[topic] = info.message_count
+
+        # Velocity command from context
+        vel_cmd = None
+        try:
+            vc = _runner.context.velocity_cmd
+            vel_cmd = {"linear": vc.linear, "angular": vc.angular}
+        except Exception:
+            pass
+
+        # Session details
+        session_info = {
+            "client_key": agent._session.client_key.hex() if agent._session.client_key else None,
+            "session_connected": agent._session.is_connected,
+        }
+
+        # READ_DATA requests from ESP32 (shows actual object IDs)
+        pending_reads = {str(k): f"{v} (0x{v:04x})" for k, v in agent._pending_read_requests.items()}
+
+        # Full entity diagnostics
+        entity_diag = entities.get_diagnostic_info()
+
+        # Also show what publish() would use for cmd_vel
+        cmd_vel_dr = entities.get_datareader_for_topic("/cmd_vel")
+
+        # Find unmapped pending reads (not associated with known datareaders)
+        known_read_ids = set()
+        for known_dr_id in [dr.object_id for dr in entities._datareaders.values()]:
+            known_read_ids.add(known_dr_id)
+            known_read_ids.add(known_dr_id + 256)
+        unmapped_reads = {str(k): v for k, v in agent._pending_read_requests.items()
+                         if k not in known_read_ids}
+
+        publish_info = {
+            "dr_id_from_entities": cmd_vel_dr,
+            "using_fallback": cmd_vel_dr is None,
+            "unmapped_read_data": unmapped_reads,
+            "will_use": unmapped_reads if cmd_vel_dr is None and unmapped_reads else None,
+        }
+
         return {
             "connected": agent.is_connected,
             "client_addr": agent._client_addr,
-            "published_topics": list(entities.get_published_topics()),
-            "subscribed_topics": list(entities.get_subscribed_topics()),
-            "datareaders": {k: v.topic for k, v in entities._datareaders.items()},
-            "topic_to_datareader": dict(entities._topic_to_datareader),
+            "session": session_info,
+            "entities": entity_diag,
+            "node_publishers": pub_stats,
+            "agent_publishers": agent_pub_stats,
+            "velocity_cmd": vel_cmd,
+            "pending_read_requests": pending_reads,
+            "cmd_vel_publish": publish_info,
         }
 
     # --- Exploration Endpoints ---
@@ -328,6 +392,164 @@ def create_app() -> FastAPI:
             return {"status": "deleted", "name": name}
         else:
             raise HTTPException(404, detail=f"Memory not found: {name}")
+
+    # --- Claude Control Endpoints ---
+
+    @app.post("/api/claude/move", response_model=ClaudeCommandResponse)
+    async def claude_move(
+        distance: float,
+        speed: float = 0.15,
+        timeout: float = 30.0
+    ):
+        """
+        Move the robot forward/backward by a specified distance.
+
+        Args:
+            distance: Distance in meters (positive=forward, negative=backward)
+            speed: Speed in m/s (default 0.15)
+            timeout: Timeout in seconds (default 30)
+
+        Returns:
+            ClaudeCommandResponse with result and actual distance traveled.
+        """
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        from nimbus.behaviors.claude_control import (
+            ClaudeControlBehavior,
+            create_move_command,
+        )
+
+        # Get or activate claude_control behavior
+        behavior = _runner._behavior_manager.get_behavior("claude_control")
+        if not behavior or not isinstance(behavior, ClaudeControlBehavior):
+            raise HTTPException(500, detail="Claude control behavior not found")
+
+        # Auto-activate if not active
+        if _runner.current_behavior != "claude_control":
+            _runner.set_behavior("claude_control")
+
+        # Create and set command
+        command = create_move_command(distance, speed, timeout)
+        behavior.set_command(command)
+
+        # Wait for completion in executor to not block event loop
+        loop = asyncio.get_event_loop()
+        completed = await loop.run_in_executor(
+            None,
+            lambda: behavior.wait_for_completion(timeout=timeout + 1.0)
+        )
+
+        result = behavior.get_result()
+        if not result:
+            raise HTTPException(500, detail="No result from command")
+
+        duration = time.time() - result.start_time if result.start_time else 0
+
+        return ClaudeCommandResponse(
+            success=result.result in ("completed", "completed_open_loop"),
+            result=result.result or "unknown",
+            target=result.target,
+            actual=result.actual or 0.0,
+            duration=duration,
+        )
+
+    @app.post("/api/claude/turn", response_model=ClaudeCommandResponse)
+    async def claude_turn(
+        degrees: float,
+        speed: float = 0.5,
+        timeout: float = 30.0
+    ):
+        """
+        Turn the robot by a specified angle.
+
+        Args:
+            degrees: Rotation in degrees (positive=left/CCW, negative=right/CW)
+            speed: Speed in rad/s (default 0.5)
+            timeout: Timeout in seconds (default 30)
+
+        Returns:
+            ClaudeCommandResponse with result and actual rotation achieved.
+        """
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        from nimbus.behaviors.claude_control import (
+            ClaudeControlBehavior,
+            create_turn_command,
+        )
+
+        # Get or activate claude_control behavior
+        behavior = _runner._behavior_manager.get_behavior("claude_control")
+        if not behavior or not isinstance(behavior, ClaudeControlBehavior):
+            raise HTTPException(500, detail="Claude control behavior not found")
+
+        # Auto-activate if not active
+        if _runner.current_behavior != "claude_control":
+            _runner.set_behavior("claude_control")
+
+        # Create and set command
+        command = create_turn_command(degrees, speed, timeout)
+        behavior.set_command(command)
+
+        # Wait for completion in executor to not block event loop
+        loop = asyncio.get_event_loop()
+        completed = await loop.run_in_executor(
+            None,
+            lambda: behavior.wait_for_completion(timeout=timeout + 1.0)
+        )
+
+        result = behavior.get_result()
+        if not result:
+            raise HTTPException(500, detail="No result from command")
+
+        duration = time.time() - result.start_time if result.start_time else 0
+
+        return ClaudeCommandResponse(
+            success=result.result in ("completed", "completed_open_loop"),
+            result=result.result or "unknown",
+            target=result.target,
+            actual=result.actual or 0.0,
+            duration=duration,
+        )
+
+    @app.post("/api/claude/stop")
+    async def claude_stop():
+        """Stop any in-progress Claude control command."""
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        from nimbus.behaviors.claude_control import ClaudeControlBehavior
+
+        behavior = _runner._behavior_manager.get_behavior("claude_control")
+        if behavior and isinstance(behavior, ClaudeControlBehavior):
+            result = behavior.stop_command()
+            if result:
+                return {
+                    "status": "stopped",
+                    "command_type": result.command_type,
+                    "actual": result.actual,
+                }
+
+        return {"status": "no_command"}
+
+    @app.get("/api/claude/status", response_model=ClaudeStatusResponse)
+    async def claude_status():
+        """Get current Claude control status."""
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        from nimbus.behaviors.claude_control import ClaudeControlBehavior
+
+        behavior = _runner._behavior_manager.get_behavior("claude_control")
+        if not behavior or not isinstance(behavior, ClaudeControlBehavior):
+            return ClaudeStatusResponse(state="unavailable", command=None)
+
+        status = behavior.get_status()
+        return ClaudeStatusResponse(
+            state=status["state"],
+            command=status["command"],
+        )
 
     return app
 
