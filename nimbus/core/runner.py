@@ -235,6 +235,12 @@ class NimbusRunner:
         # Read sensors
         self._update_sensors()
 
+        # In emergency stop, force zero velocity and skip behavior
+        if self._context.state == RobotState.EMERGENCY_STOP:
+            self._context.set_velocity_cmd(Velocity(0.0, 0.0))
+            self._send_velocity(0.0, 0.0)
+            return
+
         # Get velocity from behavior
         velocity = self._behavior_manager.compute(self._context)
 
@@ -356,6 +362,9 @@ class NimbusRunner:
         success = self._behavior_manager.activate(name)
         if success:
             self._context.set_behavior(name)
+            # Clear emergency stop when explicitly setting a new behavior
+            if self._context.state == RobotState.EMERGENCY_STOP and name != "idle":
+                self._context.set_state(RobotState.IDLE)
             # Reset smoother to immediately apply new behavior's velocity
             # (prevents residual motion from previous behavior)
             self._smoother.reset()
@@ -459,10 +468,10 @@ class NimbusRunner:
         return None
 
     def emergency_stop(self) -> None:
-        """Trigger emergency stop."""
+        """Trigger emergency stop - halt motion and switch to idle."""
         self._context.set_state(RobotState.EMERGENCY_STOP)
-        self._send_stop()
-        self._smoother.reset()
+        self.set_behavior("idle")
+        self._reliable_stop(attempts=3, delay=0.03)
 
     @property
     def safety_status(self) -> dict:
