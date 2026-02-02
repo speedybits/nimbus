@@ -304,9 +304,6 @@ Utilities for WiFi connectivity:
 def get_local_ip() -> str:
     """Get best local IP for robot communication."""
 
-def resolve_hostname(hostname: str) -> str:
-    """Resolve hostname to IP, supports mDNS (.local)."""
-
 def find_serial_ports() -> List[str]:
     """Auto-detect available serial ports."""
 ```

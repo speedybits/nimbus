@@ -344,7 +344,7 @@ nimbus wifi setup [OPTIONS]
 1. **Prerequisites Check** - Verifies dialout group membership for serial port access
 2. **USB Connection** - Detects new USB devices when robot is connected
 3. **WiFi Credentials** - Validates SSID length (max 32 chars) and password
-4. **Agent Configuration** - Choose mDNS hostname, fixed IP, or custom address
+4. **Agent Configuration** - Choose detected IP or enter a custom IP address
 5. **Configuration Summary** - Review all settings before applying
 6. **Apply Configuration** - Send config to robot with retry on failure
 
@@ -356,7 +356,6 @@ nimbus wifi setup [OPTIONS]
 | `--password, -p TEXT` | (prompt) | WiFi password |
 | `--port TEXT` | (auto) | Serial port for USB connection |
 | `--agent-ip TEXT` | (auto) | IP address of agent host |
-| `--agent-hostname TEXT` | None | mDNS hostname (e.g., `myhost.local`) |
 | `--agent-port INTEGER` | `8090` | UDP port for XRCE agent |
 | `--domain-id INTEGER` | `20` | ROS2 domain ID |
 | `--no-reboot` | False | Don't reboot robot after configuration |
@@ -371,10 +370,7 @@ nimbus wifi setup
 # Pre-fill WiFi credentials
 nimbus wifi setup --ssid MyNetwork --password mypassword
 
-# Use mDNS hostname for agent (recommended - survives IP changes)
-nimbus wifi setup --agent-hostname mycomputer.local
-
-# Use fixed IP address
+# Use specific IP address
 nimbus wifi setup --agent-ip 192.168.1.100
 
 # Specify serial port directly
