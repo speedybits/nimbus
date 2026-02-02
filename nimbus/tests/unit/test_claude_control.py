@@ -338,3 +338,123 @@ class TestCommandCreation:
 
         cmd = create_turn_command(90.0, speed=-0.5)
         assert cmd.speed == 0.5
+
+
+class TestOpenLoopFallback:
+    """Tests for open-loop (time-based) fallback when odometry is stale."""
+
+    @pytest.fixture
+    def behavior(self):
+        """Create a fresh behavior instance."""
+        b = ClaudeControlBehavior()
+        b.activate()
+        return b
+
+    @pytest.fixture
+    def stale_context(self):
+        """Create a context where odometry never changes (always 0,0,0)."""
+        ctx = RobotContext()
+        snapshot = SensorSnapshot(
+            timestamp=datetime.now(),
+            pose=Pose2D(x=0.0, y=0.0, theta=0.0),
+            velocity=Velocity(linear=0.0, angular=0.0),
+            lidar_ranges=tuple([2.0] * 360),
+            closest_obstacle=2.0,
+            obstacle_direction=0.0,
+        )
+        ctx.update_sensors(snapshot)
+        return ctx
+
+    def test_move_falls_back_to_open_loop(self, behavior, stale_context):
+        """Move should switch to open-loop when odom doesn't change."""
+        cmd = create_move_command(0.3, speed=0.15)
+        behavior.set_command(cmd)
+
+        # Run enough compute cycles with unchanging odom to trigger fallback
+        for _ in range(ClaudeControlBehavior.ODOM_STALE_CYCLES + 1):
+            velocity = behavior.compute(stale_context)
+
+        # Should have switched to open-loop
+        result = behavior.get_result()
+        assert result.open_loop is True
+        # Should still be moving (not yet timed out)
+        assert velocity.linear > 0
+
+    def test_move_completes_open_loop_by_time(self, behavior, stale_context):
+        """Move should complete via time-based fallback."""
+        speed = 0.15
+        distance = 0.3  # target_time = 2.0s
+        cmd = create_move_command(distance, speed=speed, timeout=30.0)
+        behavior.set_command(cmd)
+        # Set start_time in the past so time-based completion triggers immediately
+        cmd.start_time = time.time() - 5.0  # well past target_time of 2.0s
+
+        # Trigger open-loop mode
+        for _ in range(ClaudeControlBehavior.ODOM_STALE_CYCLES + 1):
+            velocity = behavior.compute(stale_context)
+
+        result = behavior.get_result()
+        assert result.result == "completed_open_loop"
+        assert result.open_loop is True
+        assert result.actual == distance  # reports target as actual
+        assert velocity.is_stopped()
+
+    def test_turn_falls_back_to_open_loop(self, behavior, stale_context):
+        """Turn should switch to open-loop when odom doesn't change."""
+        cmd = create_turn_command(90.0, speed=0.5)
+        behavior.set_command(cmd)
+
+        for _ in range(ClaudeControlBehavior.ODOM_STALE_CYCLES + 1):
+            velocity = behavior.compute(stale_context)
+
+        result = behavior.get_result()
+        assert result.open_loop is True
+        assert velocity.angular > 0
+
+    def test_turn_completes_open_loop_by_time(self, behavior, stale_context):
+        """Turn should complete via time-based fallback."""
+        degrees = 45.0
+        speed = 0.5  # rad/s
+        # target_time = radians(45) / 0.5 ≈ 1.57s
+        cmd = create_turn_command(degrees, speed=speed, timeout=10.0)
+        behavior.set_command(cmd)
+        cmd.start_time = time.time() - 5.0  # well past target_time
+
+        for _ in range(ClaudeControlBehavior.ODOM_STALE_CYCLES + 1):
+            velocity = behavior.compute(stale_context)
+
+        result = behavior.get_result()
+        assert result.result == "completed_open_loop"
+        assert result.open_loop is True
+        assert result.actual == degrees
+
+    def test_odom_working_skips_open_loop(self, behavior, stale_context):
+        """When odom is working, open-loop should not activate."""
+        cmd = create_move_command(0.5, speed=0.15)
+        behavior.set_command(cmd)
+
+        # First compute initializes
+        behavior.compute(stale_context)
+
+        # Simulate odom updating (robot moved)
+        snapshot = SensorSnapshot(
+            timestamp=datetime.now(),
+            pose=Pose2D(x=0.1, y=0.0, theta=0.0),
+            velocity=Velocity(linear=0.15, angular=0.0),
+            lidar_ranges=tuple([2.0] * 360),
+            closest_obstacle=2.0,
+            obstacle_direction=0.0,
+        )
+        stale_context.update_sensors(snapshot)
+
+        # Run more cycles
+        for _ in range(ClaudeControlBehavior.ODOM_STALE_CYCLES + 2):
+            behavior.compute(stale_context)
+
+        result = behavior.get_result()
+        assert result.open_loop is False
+
+    def test_open_loop_command_field_default(self):
+        """ClaudeCommand.open_loop should default to False."""
+        cmd = create_move_command(1.0)
+        assert cmd.open_loop is False

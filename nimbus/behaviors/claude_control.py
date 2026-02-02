@@ -41,6 +41,7 @@ class ClaudeCommand:
     actual: Optional[float] = None  # actual distance/rotation achieved
     accumulated_rotation: float = 0.0  # for tracking rotation across wraparound
     last_distance: float = 0.0  # track last computed distance for move commands
+    open_loop: bool = False  # True when using time-based fallback (no odom feedback)
 
 
 def _normalize_angle(angle: float) -> float:
@@ -75,6 +76,9 @@ class ClaudeControlBehavior(Behavior):
     DEFAULT_LINEAR_SPEED = 0.15   # m/s
     DEFAULT_ANGULAR_SPEED = 0.5   # rad/s (~28°/s)
 
+    # Open-loop fallback: number of compute cycles with no odom change before switching
+    ODOM_STALE_CYCLES = 5  # ~0.5s at 10Hz control loop
+
     def __init__(self):
         super().__init__()
         self._lock = threading.Lock()
@@ -82,6 +86,8 @@ class ClaudeControlBehavior(Behavior):
         self._command: Optional[ClaudeCommand] = None
         self._completion_event = threading.Event()
         self._last_theta: Optional[float] = None
+        self._odom_check_cycles: int = 0  # cycles since command started
+        self._odom_ever_changed: bool = False  # whether odom has changed from initial
 
     def activate(self) -> None:
         """Called when behavior becomes active."""
@@ -91,6 +97,8 @@ class ClaudeControlBehavior(Behavior):
             self._command = None
             self._completion_event.clear()
             self._last_theta = None
+            self._odom_check_cycles = 0
+            self._odom_ever_changed = False
 
     def deactivate(self) -> None:
         """Called when behavior is deactivated."""
@@ -110,6 +118,8 @@ class ClaudeControlBehavior(Behavior):
             self._command = None
             self._completion_event.clear()
             self._last_theta = None
+            self._odom_check_cycles = 0
+            self._odom_ever_changed = False
 
     def set_command(self, command: ClaudeCommand) -> None:
         """
@@ -129,6 +139,8 @@ class ClaudeControlBehavior(Behavior):
             self._command.start_time = time.time()
             self._completion_event.clear()
             self._last_theta = None
+            self._odom_check_cycles = 0
+            self._odom_ever_changed = False
 
             if command.command_type == "move":
                 self._state = CommandState.MOVING
@@ -219,25 +231,44 @@ class ClaudeControlBehavior(Behavior):
         sensors = context.sensors
         current_pose = sensors.pose
         start_pose = self._command.start_pose
-
-        # Calculate distance traveled
-        distance_traveled = current_pose.distance_to(start_pose)
-        self._command.last_distance = distance_traveled  # Track for progress reporting
         target_distance = abs(self._command.target)
 
-        # Check if we've reached the target
-        if distance_traveled >= target_distance - self.LINEAR_TOLERANCE:
-            self._complete_command("completed")
-            return Velocity.stop()
+        # Track whether odometry is providing feedback
+        self._odom_check_cycles += 1
+        distance_traveled = current_pose.distance_to(start_pose)
+
+        if distance_traveled > self.LINEAR_TOLERANCE:
+            self._odom_ever_changed = True
+
+        # Open-loop fallback: if odom hasn't changed after enough cycles, use time-based
+        if (not self._odom_ever_changed
+                and not self._command.open_loop
+                and self._odom_check_cycles >= self.ODOM_STALE_CYCLES):
+            self._command.open_loop = True
+
+        if self._command.open_loop:
+            # Time-based completion
+            elapsed = time.time() - self._command.start_time
+            target_time = target_distance / self._command.speed
+            if elapsed >= target_time:
+                self._complete_command("completed_open_loop")
+                return Velocity.stop()
+        else:
+            # Odometry-based completion
+            self._command.last_distance = distance_traveled
+            if distance_traveled >= target_distance - self.LINEAR_TOLERANCE:
+                self._complete_command("completed")
+                return Velocity.stop()
 
         # Calculate velocity (direction based on sign of target)
         direction = 1.0 if self._command.target > 0 else -1.0
         linear = direction * self._command.speed
 
-        # Slow down as we approach target
-        remaining = target_distance - distance_traveled
-        if remaining < 0.1:
-            linear *= max(0.3, remaining / 0.1)
+        # Slow down as we approach target (only useful with odom feedback)
+        if not self._command.open_loop:
+            remaining = target_distance - distance_traveled
+            if remaining < 0.1:
+                linear *= max(0.3, remaining / 0.1)
 
         context.set_state(RobotState.NAVIGATING)
         return Velocity(linear=linear, angular=0.0)
@@ -255,22 +286,43 @@ class ClaudeControlBehavior(Behavior):
 
         # Convert target to radians
         target_radians = math.radians(self._command.target)
-        rotation_achieved = self._command.accumulated_rotation
 
-        # Check if we've reached the target rotation
-        angular_tolerance_rad = math.radians(self.ANGULAR_TOLERANCE)
-        if abs(rotation_achieved) >= abs(target_radians) - angular_tolerance_rad:
-            self._complete_command("completed")
-            return Velocity.stop()
+        # Track whether odometry is providing feedback
+        self._odom_check_cycles += 1
+        if abs(self._command.accumulated_rotation) > math.radians(self.ANGULAR_TOLERANCE):
+            self._odom_ever_changed = True
+
+        # Open-loop fallback: if odom hasn't changed after enough cycles, use time-based
+        if (not self._odom_ever_changed
+                and not self._command.open_loop
+                and self._odom_check_cycles >= self.ODOM_STALE_CYCLES):
+            self._command.open_loop = True
+
+        if self._command.open_loop:
+            # Time-based completion
+            elapsed = time.time() - self._command.start_time
+            target_time = abs(target_radians) / self._command.speed
+            if elapsed >= target_time:
+                self._complete_command("completed_open_loop")
+                return Velocity.stop()
+        else:
+            # Odometry-based completion
+            rotation_achieved = self._command.accumulated_rotation
+            angular_tolerance_rad = math.radians(self.ANGULAR_TOLERANCE)
+            if abs(rotation_achieved) >= abs(target_radians) - angular_tolerance_rad:
+                self._complete_command("completed")
+                return Velocity.stop()
 
         # Calculate angular velocity (direction based on sign of target)
         direction = 1.0 if target_radians > 0 else -1.0
         angular = direction * self._command.speed
 
-        # Slow down as we approach target
-        remaining = abs(target_radians) - abs(rotation_achieved)
-        if remaining < 0.2:
-            angular *= max(0.3, remaining / 0.2)
+        # Slow down as we approach target (only useful with odom feedback)
+        if not self._command.open_loop:
+            rotation_achieved = self._command.accumulated_rotation
+            remaining = abs(target_radians) - abs(rotation_achieved)
+            if remaining < 0.2:
+                angular *= max(0.3, remaining / 0.2)
 
         context.set_state(RobotState.NAVIGATING)
         return Velocity(linear=0.0, angular=angular)
@@ -279,8 +331,13 @@ class ClaudeControlBehavior(Behavior):
         """Mark current command as complete."""
         if self._command:
             self._command.result = result
-            self._command.actual = self._calculate_progress()
-        self._state = CommandState.COMPLETE if result == "completed" else CommandState.ERROR
+            if self._command.open_loop and result == "completed_open_loop":
+                # In open-loop mode, report target as actual (best estimate)
+                self._command.actual = abs(self._command.target)
+            else:
+                self._command.actual = self._calculate_progress()
+        is_success = result in ("completed", "completed_open_loop")
+        self._state = CommandState.COMPLETE if is_success else CommandState.ERROR
         self._completion_event.set()
 
     def _calculate_progress(self) -> float:

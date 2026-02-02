@@ -159,6 +159,34 @@ class EntityManager:
             kind: The object kind (PARTICIPANT, TOPIC, DATAWRITER, etc.)
             payload: The full CREATE submessage payload
         """
+        from .logger import xrce_log, LogLevel
+
+        # Also extract kind from object_id bytes (XRCE encodes kind in low nibble of byte 1)
+        kind_from_wire = None
+        if len(payload) >= 2:
+            kind_from_wire_val = payload[1] & 0x0F
+            try:
+                kind_from_wire = ObjectKind(kind_from_wire_val)
+            except ValueError:
+                pass
+
+        xrce_log(
+            f"[bold magenta]  EntityManager: kind_from_byte4={kind.name}({kind.value}) "
+            f"kind_from_objid={kind_from_wire.name if kind_from_wire else 'None'}"
+            f"({kind_from_wire_val if len(payload) >= 2 else '?'}) "
+            f"obj_id={object_id} payload_hex={payload[:8].hex()}[/bold magenta]",
+            level=LogLevel.NORMAL
+        )
+
+        # If the kind from byte 4 doesn't match the kind from the object_id,
+        # prefer the object_id-derived kind (XRCE standard encoding)
+        if kind_from_wire and kind_from_wire != kind:
+            xrce_log(
+                f"[bold yellow]  KIND MISMATCH: byte4={kind.name} objid={kind_from_wire.name} — using objid[/bold yellow]",
+                level=LogLevel.NORMAL
+            )
+            kind = kind_from_wire
+
         with self._lock:
             if kind == ObjectKind.PARTICIPANT:
                 self._participants[object_id] = Entity(object_id, kind, "participant")
@@ -190,6 +218,7 @@ class EntityManager:
                 # Fallback: use the last created topic (implicit association)
                 if not topic_name and self._last_topic_name:
                     topic_name = self._last_topic_name
+                    xrce_log(f"[cyan]  DATAWRITER using last_topic: {topic_name}[/cyan]", level=LogLevel.NORMAL)
 
                 if topic_name:
                     self._datawriters[object_id] = DataWriterEntity(
@@ -200,6 +229,10 @@ class EntityManager:
                     normalized = normalize_topic_name(topic_name)
                     if normalized != topic_name:
                         self._topic_to_datawriter[normalized] = object_id
+                    xrce_log(f"[bold green]  DATAWRITER {object_id} -> {topic_name}[/bold green]", level=LogLevel.NORMAL)
+                else:
+                    xrce_log(f"[yellow]  DATAWRITER {object_id}: no topic association![/yellow]", level=LogLevel.NORMAL)
+                    xrce_log(f"[dim]  DW payload: {payload.hex()}[/dim]", level=LogLevel.NORMAL)
 
             elif kind == ObjectKind.DATAREADER:
                 # Try to extract topic name from payload first
@@ -208,6 +241,7 @@ class EntityManager:
                 # Fallback: use the last created topic (implicit association)
                 if not topic_name and self._last_topic_name:
                     topic_name = self._last_topic_name
+                    xrce_log(f"[cyan]  DATAREADER using last_topic: {topic_name}[/cyan]", level=LogLevel.NORMAL)
 
                 if topic_name:
                     self._datareaders[object_id] = DataReaderEntity(
@@ -218,6 +252,10 @@ class EntityManager:
                     normalized = normalize_topic_name(topic_name)
                     if normalized != topic_name:
                         self._topic_to_datareader[normalized] = object_id
+                    xrce_log(f"[bold green]  DATAREADER {object_id} -> {topic_name}[/bold green]", level=LogLevel.NORMAL)
+                else:
+                    xrce_log(f"[yellow]  DATAREADER {object_id}: no topic association![/yellow]", level=LogLevel.NORMAL)
+                    xrce_log(f"[dim]  DR payload: {payload.hex()}[/dim]", level=LogLevel.NORMAL)
 
     def get_datawriter_topic(self, object_id: int) -> Optional[str]:
         """
@@ -319,6 +357,22 @@ class EntityManager:
                 topics.add(normalize_topic_name(dr.topic_name))
             return topics
 
+    def get_diagnostic_info(self) -> dict:
+        """Get full diagnostic info about tracked entities."""
+        with self._lock:
+            return {
+                "participants": {str(k): v.name for k, v in self._participants.items()},
+                "topics": {str(k): {"name": v.name, "type": v.type_name} for k, v in self._topics.items()},
+                "publishers": {str(k): v.name for k, v in self._publishers.items()},
+                "subscribers": {str(k): v.name for k, v in self._subscribers.items()},
+                "datawriters": {str(k): {"name": v.name, "topic": v.topic_name} for k, v in self._datawriters.items()},
+                "datareaders": {str(k): {"name": v.name, "topic": v.topic_name} for k, v in self._datareaders.items()},
+                "topic_to_datawriter": dict(self._topic_to_datawriter),
+                "topic_to_datareader": dict(self._topic_to_datareader),
+                "last_topic_name": self._last_topic_name,
+                "last_topic_id": self._last_topic_id,
+            }
+
     def clear(self) -> None:
         """Clear all tracked entities."""
         with self._lock:
@@ -337,32 +391,42 @@ class EntityManager:
         """
         Extract topic name and type from CREATE TOPIC payload.
 
-        The ESP32 uses binary representation format, not XML.
-        Binary format (after obj_id, req_id, kind):
-            - format (2 bytes): 0x0003 = binary
-            - padding (1 byte)
-            - total_length (4 bytes)
-            - name_length (4 bytes)
-            - name (null-terminated string)
-            - type_length (4 bytes)
-            - type (null-terminated string)
+        Uses multiple extraction strategies in order of reliability:
+        1. Pattern matching (most reliable for known topics)
+        2. Binary format parsing
+        3. XML format parsing
 
         Returns:
             Tuple of (topic_name, type_name)
         """
-        # Try binary format first (ESP32 Micro-ROS uses this)
-        topic_name = self._extract_binary_string(payload, string_index=0)
+        from .logger import xrce_log, LogLevel
+
+        # Log payload hex for diagnostics
+        xrce_log(f"[dim]  TOPIC payload ({len(payload)} bytes): {payload[:40].hex()}...[/dim]", level=LogLevel.NORMAL)
+
+        # Strategy 1: Pattern search (most reliable — finds known topic names anywhere in bytes)
+        topic_name = self._find_topic_pattern(payload)
+        if topic_name:
+            xrce_log(f"[green]  Topic name from pattern: {topic_name}[/green]", level=LogLevel.NORMAL)
+
+        # Strategy 2: Binary format extraction (fragile — offset assumptions may not match firmware)
+        type_name = None
+        if not topic_name:
+            topic_name = self._extract_binary_string(payload, string_index=0)
+            if topic_name:
+                xrce_log(f"[cyan]  Topic name from binary: {topic_name}[/cyan]", level=LogLevel.NORMAL)
         type_name = self._extract_binary_string(payload, string_index=1)
 
-        # Fallback to XML format
+        # Strategy 3: XML format
         if not topic_name:
             topic_name = self._extract_xml_element(payload, 'name')
+            if topic_name:
+                xrce_log(f"[cyan]  Topic name from XML: {topic_name}[/cyan]", level=LogLevel.NORMAL)
         if not type_name:
             type_name = self._extract_xml_element(payload, 'dataType')
 
-        # Last resort: search for known topic patterns
         if not topic_name:
-            topic_name = self._find_topic_pattern(payload)
+            xrce_log(f"[yellow]  Could not extract topic name from payload[/yellow]", level=LogLevel.NORMAL)
 
         return topic_name, type_name
 
@@ -370,8 +434,7 @@ class EntityManager:
         """
         Extract topic name from CREATE DATAWRITER/DATAREADER payload.
 
-        The ESP32 uses binary representation format. The payload contains
-        the topic name directly (not just a reference).
+        Uses pattern matching first (most reliable), then binary/XML fallbacks.
 
         Args:
             payload: The CREATE submessage payload
@@ -379,18 +442,27 @@ class EntityManager:
         Returns:
             Topic name if found, None otherwise
         """
-        # Try binary format first
+        from .logger import xrce_log, LogLevel
+
+        # Strategy 1: Pattern search (most reliable)
+        topic_name = self._find_topic_pattern(payload)
+        if topic_name:
+            xrce_log(f"[green]  DW/DR topic from pattern: {topic_name}[/green]", level=LogLevel.NORMAL)
+            return topic_name
+
+        # Strategy 2: Binary format
         topic_name = self._extract_binary_string(payload, string_index=0)
         if topic_name:
+            xrce_log(f"[cyan]  DW/DR topic from binary: {topic_name}[/cyan]", level=LogLevel.NORMAL)
             return topic_name
 
-        # Try XML format
+        # Strategy 3: XML format
         topic_name = self._extract_xml_element(payload, 'name')
         if topic_name:
+            xrce_log(f"[cyan]  DW/DR topic from XML: {topic_name}[/cyan]", level=LogLevel.NORMAL)
             return topic_name
 
-        # Last resort: search for known topic patterns
-        return self._find_topic_pattern(payload)
+        return None
 
     def _extract_binary_string(self, payload: bytes, string_index: int = 0) -> Optional[str]:
         """

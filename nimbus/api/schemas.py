@@ -39,6 +39,8 @@ class SensorResponse(BaseModel):
     closest_obstacle: Optional[float] = Field(None, description="Nearest obstacle distance")
     obstacle_direction: Optional[float] = Field(None, description="Angle to nearest obstacle (radians)")
     lidar_histogram: list[Optional[float]] = Field(default_factory=list, description="Polar histogram (72 sectors)")
+    odom_age: Optional[float] = Field(None, description="Seconds since last odometry message")
+    odom_stale: Optional[bool] = Field(None, description="Whether odometry data is stale (>1s old)")
 
 
 class NavigateRequest(BaseModel):
