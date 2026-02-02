@@ -235,12 +235,6 @@ class NimbusRunner:
         # Read sensors
         self._update_sensors()
 
-        # In emergency stop, force zero velocity and skip behavior
-        if self._context.state == RobotState.EMERGENCY_STOP:
-            self._context.set_velocity_cmd(Velocity(0.0, 0.0))
-            self._send_velocity(0.0, 0.0)
-            return
-
         # Get velocity from behavior
         velocity = self._behavior_manager.compute(self._context)
 

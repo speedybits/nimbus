@@ -71,6 +71,7 @@ class ClaudeControlBehavior(Behavior):
     # Tolerances
     LINEAR_TOLERANCE = 0.02    # 2cm
     ANGULAR_TOLERANCE = 2.0    # 2 degrees
+    POSE_SANITY_LIMIT = 1000.0  # Max plausible pose value (meters)
 
     # Default speeds
     DEFAULT_LINEAR_SPEED = 0.15   # m/s
@@ -213,10 +214,14 @@ class ClaudeControlBehavior(Behavior):
                 self._complete_command("timeout")
                 return Velocity.stop()
 
-            # Check for obstacle (safety controller will zero velocity, but we detect it here)
+            # Check for obstacle in forward arc only
             if self._state == CommandState.MOVING and self._command.target > 0:
-                # Moving forward - check for obstacles ahead
-                if sensors.closest_obstacle < 0.15:  # Safety margin
+                # Only stop for obstacles within ±45° of front
+                angle = math.atan2(
+                    math.sin(sensors.obstacle_direction),
+                    math.cos(sensors.obstacle_direction),
+                )
+                if abs(angle) <= math.radians(45) and sensors.closest_obstacle < 0.15:
                     self._complete_command("obstacle")
                     return Velocity.stop()
 
@@ -235,10 +240,19 @@ class ClaudeControlBehavior(Behavior):
 
         # Track whether odometry is providing feedback
         self._odom_check_cycles += 1
-        distance_traveled = current_pose.distance_to(start_pose)
 
-        if distance_traveled > self.LINEAR_TOLERANCE:
-            self._odom_ever_changed = True
+        # Detect garbage odom (CDR parsing artifacts produce extreme values)
+        pose_sane = (abs(current_pose.x) < self.POSE_SANITY_LIMIT
+                     and abs(current_pose.y) < self.POSE_SANITY_LIMIT
+                     and abs(start_pose.x) < self.POSE_SANITY_LIMIT
+                     and abs(start_pose.y) < self.POSE_SANITY_LIMIT)
+
+        if pose_sane:
+            distance_traveled = current_pose.distance_to(start_pose)
+            if distance_traveled > self.LINEAR_TOLERANCE:
+                self._odom_ever_changed = True
+        else:
+            distance_traveled = 0.0
 
         # Open-loop fallback: if odom hasn't changed after enough cycles, use time-based
         if (not self._odom_ever_changed
@@ -278,18 +292,22 @@ class ClaudeControlBehavior(Behavior):
         sensors = context.sensors
         current_theta = sensors.pose.theta
 
-        # Track rotation with wraparound handling
-        if self._last_theta is not None:
+        # Detect garbage theta (valid range is [-pi, pi])
+        theta_sane = abs(current_theta) <= math.pi + 0.01
+
+        # Track rotation with wraparound handling (only with sane values)
+        if self._last_theta is not None and theta_sane:
             delta = _normalize_angle(current_theta - self._last_theta)
             self._command.accumulated_rotation += delta
-        self._last_theta = current_theta
+        if theta_sane:
+            self._last_theta = current_theta
 
         # Convert target to radians
         target_radians = math.radians(self._command.target)
 
         # Track whether odometry is providing feedback
         self._odom_check_cycles += 1
-        if abs(self._command.accumulated_rotation) > math.radians(self.ANGULAR_TOLERANCE):
+        if theta_sane and abs(self._command.accumulated_rotation) > math.radians(self.ANGULAR_TOLERANCE):
             self._odom_ever_changed = True
 
         # Open-loop fallback: if odom hasn't changed after enough cycles, use time-based
