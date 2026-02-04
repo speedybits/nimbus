@@ -185,6 +185,78 @@ resolution: 0.1
         assert -math.pi <= theta <= math.pi
 
 
+    def test_from_template_four_rooms(self):
+        """Load four_rooms template with correct dimensions."""
+        world = SimulatedWorld.from_template("four_rooms")
+        assert world.width == 80
+        assert world.height == 80
+        assert world.resolution == 0.1
+
+    def test_four_rooms_doors_passable(self):
+        """All four door gaps are free space."""
+        world = SimulatedWorld.from_template("four_rooms")
+        mid = 40
+
+        # NW<->NE door: x=mid, y near 55
+        door_y = mid + (mid * 3 // 4)  # 70
+        for dy in range(4):
+            assert not world.grid[door_y + dy][mid], f"NW-NE door blocked at y={door_y + dy}"
+
+        # SW<->SE door: x=mid, y near 25
+        door_y = mid // 2 + mid // 8  # 25
+        for dy in range(4):
+            assert not world.grid[door_y + dy][mid], f"SW-SE door blocked at y={door_y + dy}"
+
+        # NW<->SW door: y=mid, x near 15
+        door_x = mid // 2 - mid // 8  # 15
+        for dx in range(4):
+            assert not world.grid[mid][door_x + dx], f"NW-SW door blocked at x={door_x + dx}"
+
+        # NE<->SE door: y=mid, x near 60
+        door_x = mid + mid // 2  # 60
+        for dx in range(4):
+            assert not world.grid[mid][door_x + dx], f"NE-SE door blocked at x={door_x + dx}"
+
+    def test_four_rooms_walls_present(self):
+        """Cross-walls are solid outside door gaps."""
+        world = SimulatedWorld.from_template("four_rooms")
+        mid = 40
+
+        # Vertical wall at x=mid should be mostly solid
+        wall_cells = sum(1 for y in range(1, 79) if world.grid[y][mid])
+        # Total interior cells on vertical wall: 78, minus 8 door cells (2 doors × 4)
+        assert wall_cells >= 70, f"Vertical wall too sparse: {wall_cells} solid cells"
+
+        # Horizontal wall at y=mid should be mostly solid
+        wall_cells = sum(1 for x in range(1, 79) if world.grid[mid][x])
+        assert wall_cells >= 70, f"Horizontal wall too sparse: {wall_cells} solid cells"
+
+    def test_four_rooms_spawn_in_sw(self):
+        """Robot spawns in SW quadrant (negative x, negative y)."""
+        world = SimulatedWorld.from_template("four_rooms")
+        assert world.robot_x < 0, f"Spawn x={world.robot_x} should be negative"
+        assert world.robot_y < 0, f"Spawn y={world.robot_y} should be negative"
+
+    def test_four_rooms_reproducible(self):
+        """Same seed produces identical grids."""
+        w1 = SimulatedWorld._create_four_rooms(seed=42)
+        w2 = SimulatedWorld._create_four_rooms(seed=42)
+        assert w1.grid == w2.grid
+
+    def test_four_rooms_different_seeds(self):
+        """Different seeds produce different grids."""
+        w1 = SimulatedWorld._create_four_rooms(seed=42)
+        w2 = SimulatedWorld._create_four_rooms(seed=99)
+        assert w1.grid != w2.grid
+
+    def test_four_rooms_raycast(self):
+        """Raycast from spawn produces 360 valid readings."""
+        world = SimulatedWorld.from_template("four_rooms")
+        ranges = world.raycast(num_rays=360, max_range=3.5)
+        assert len(ranges) == 360
+        assert all(0 < r <= 3.5 for r in ranges)
+
+
 class TestSimulatorNode:
     """Tests for SimulatorNode."""
 

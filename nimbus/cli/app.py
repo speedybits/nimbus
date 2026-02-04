@@ -14,37 +14,66 @@ from pathlib import Path
 
 app = typer.Typer(
     name="nimbus",
-    help="Nimbus: Lightweight Robot Control Platform",
+    help="""[bold blue]Nimbus[/bold blue] — Lightweight Robot Control Platform
+
+Replace heavy ROS2 navigation stacks with elegant, minimal Python.
+
+[bold]Quick Start[/bold]
+  [cyan]nimbus run[/cyan]                          Start with live dashboard (waiting for ESP32)
+  [cyan]nimbus run --sim[/cyan]                    Start in simulation mode (no hardware needed)
+  [cyan]nimbus run --sim --map-template four_rooms[/cyan]  Four-room maze with doors
+  [cyan]nimbus run --behavior wander[/cyan]        Start and immediately begin wandering
+
+[bold]Modes[/bold]
+  [green]Hardware[/green]   [dim](default)[/dim]   Connects to ESP32 via XRCE-DDS over WiFi
+  [green]Simulation[/green] [dim](--sim)[/dim]     Virtual world with synthetic LIDAR and odometry
+  [green]Mock[/green]       [dim](--mock)[/dim]    No sensors, for API/UI development only
+
+[bold]Claude Control[/bold] (API-driven movement, works in all modes)
+  [cyan]curl -X POST 'localhost:8080/api/claude/move?distance=0.5'[/cyan]
+  [cyan]curl -X POST 'localhost:8080/api/claude/turn?degrees=90'[/cyan]
+
+[bold]Dashboard Keys[/bold]
+  [cyan]W[/cyan]=wander [cyan]I[/cyan]=idle [cyan]P[/cyan]=patrol [cyan]M[/cyan]=motor_test [cyan]E[/cyan]=emergency stop [cyan]Q[/cyan]=quit
+
+[bold]API[/bold]  http://localhost:8080  •  [bold]WebSocket[/bold]  ws://localhost:8080/ws/telemetry""",
     add_completion=True,
     rich_markup_mode="rich",
+    epilog="""[dim]Config: ~/.nimbus/config.yaml  •  State: ~/.nimbus/claude_state.json
+Docs: see CLAUDE.md  •  ESP32 docs: ~/projects/b4m_yahboom/doc_txt[/dim]""",
 )
 
 console = Console()
 
 
-@app.command()
+@app.command(rich_help_panel="Core")
 def run(
-    behavior: str = typer.Option("idle", help="Initial behavior: idle, wander, patrol, goto"),
+    behavior: str = typer.Option("idle", help="Initial behavior: idle, wander, patrol, goto, claude_control"),
     api: bool = typer.Option(True, help="Enable REST/WebSocket API"),
     dashboard: bool = typer.Option(True, help="Show live dashboard"),
     config: Optional[Path] = typer.Option(None, help="Path to config file"),
     mock: bool = typer.Option(False, "--mock", help="Use mock node (no hardware)"),
     sim: bool = typer.Option(False, "--sim", help="Run in simulation mode (virtual world)"),
     map_file: Optional[Path] = typer.Option(None, "--map", help="Path to map file for simulation"),
+    map_template: Optional[str] = typer.Option(None, "--map-template", help="Built-in map template: empty_room, simple_maze, four_rooms"),
     spawn: Optional[str] = typer.Option(None, "--spawn", help="Spawn position as x,y,theta (e.g., '0.5,0.5,0')"),
     discover: bool = typer.Option(False, "--discover", help="Auto-discover ESP32 on network"),
     verbosity: int = typer.Option(1, "-v", "--verbosity", min=1, max=3, help="Log verbosity: 1=minimal, 2=normal, 3=debug"),
 ):
     """
-    Start Nimbus robot controller.
+    Start Nimbus robot controller with live dashboard and API server.
 
-    Examples:
-        nimbus run --behavior wander
-        nimbus run --behavior idle --no-dashboard
-        nimbus run --discover --behavior wander    # Auto-discover ESP32
-        nimbus run -v 3                            # Debug verbosity
-        nimbus run --sim --behavior wander         # Simulation mode
-        nimbus run --sim --map path/to/map.txt     # Custom map
+    Launches the control loop, API (port 8080), and interactive dashboard.
+    Use --sim to run without hardware. Press Ctrl+C to stop.
+
+    [bold]Examples:[/bold]
+        nimbus run                                          # Default: dashboard + API, wait for ESP32
+        nimbus run --sim --behavior wander                  # Simulation with wandering
+        nimbus run --sim --map-template four_rooms          # Four-room maze simulation
+        nimbus run --sim --map-template four_rooms --behavior wander  # Wander through rooms
+        nimbus run --sim --map maze.txt --spawn 1,1,0       # Custom map + spawn point
+        nimbus run --discover --behavior wander             # Auto-find ESP32 on network
+        nimbus run --no-dashboard -v 3                      # Headless with debug logging
     """
     # Set log verbosity
     from nimbus.core.xrce.logger import set_verbosity
@@ -101,7 +130,7 @@ def run(
         if map_file:
             console.print(f"[green]Map:[/green] {map_file}")
         else:
-            console.print("[green]Map:[/green] empty_room (default)")
+            console.print(f"[green]Map:[/green] {map_template or 'empty_room'}")
     elif not mock:
         console.print("[green]Mode:[/green] XRCE Agent (waiting for ESP32)")
 
@@ -114,6 +143,8 @@ def run(
         nimbus_config.simulation.enabled = True
         if map_file:
             nimbus_config.simulation.map_file = str(map_file)
+        if map_template:
+            nimbus_config.simulation.map_template = map_template
         if spawn_x is not None:
             nimbus_config.simulation.spawn_x = spawn_x
         if spawn_y is not None:
@@ -163,9 +194,9 @@ def run(
     console.print("[bold red]Nimbus stopped.[/bold red]")
 
 
-@app.command()
+@app.command(rich_help_panel="Core")
 def status():
-    """Show current robot status."""
+    """Show robot state, pose, velocity, and nearest obstacle."""
     import httpx
 
     try:
@@ -198,9 +229,9 @@ def status():
         raise typer.Exit(1)
 
 
-@app.command()
+@app.command(rich_help_panel="Core")
 def stop():
-    """Emergency stop - immediately halt all motion."""
+    """Emergency stop — immediately halt all motion."""
     import httpx
 
     try:
@@ -213,17 +244,17 @@ def stop():
         console.print(f"[red]Error:[/red] {e}")
 
 
-@app.command("goto")
+@app.command("goto", rich_help_panel="Control")
 def goto_cmd(
     x: float = typer.Argument(..., help="X coordinate (meters)"),
     y: float = typer.Argument(..., help="Y coordinate (meters)"),
     wait: bool = typer.Option(True, help="Wait for navigation to complete"),
 ):
     """
-    Navigate to coordinates.
+    Navigate to X Y coordinates (meters).
 
-    Example:
-        nimbus goto 2.0 1.5 --wait
+    [bold]Example:[/bold]
+        nimbus goto 2.0 1.5
     """
     import httpx
     import time
@@ -266,9 +297,9 @@ def goto_cmd(
         raise typer.Exit(1)
 
 
-@app.command()
+@app.command(rich_help_panel="Control")
 def behaviors():
-    """List available behaviors."""
+    """List available behaviors and show which is active."""
     import httpx
 
     try:
@@ -293,11 +324,11 @@ def behaviors():
         raise typer.Exit(1)
 
 
-@app.command()
+@app.command(rich_help_panel="Control")
 def behavior(
-    name: str = typer.Argument(..., help="Behavior name"),
+    name: str = typer.Argument(..., help="Behavior name (idle, wander, patrol, goto, claude_control, motor_test)"),
 ):
-    """Set active behavior."""
+    """Switch to a different behavior at runtime."""
     import httpx
 
     try:
@@ -313,7 +344,7 @@ def behavior(
         raise typer.Exit(1)
 
 
-@app.command()
+@app.command(rich_help_panel="Control")
 def explore(
     memory: str = typer.Option("default", "--memory", "-m", help="Memory name to use"),
     new: bool = typer.Option(False, "--new", help="Start with fresh memory"),
@@ -326,14 +357,13 @@ def explore(
     """
     Start AI-driven exploration with Ollama.
 
-    The robot will explore autonomously, using Ollama to decide
-    where to go next based on LIDAR data.
+    The robot explores autonomously, using Ollama to decide where to go
+    next based on LIDAR data. Memories persist across sessions.
 
-    Examples:
-        nimbus explore                              # Use default memory
-        nimbus explore --memory kitchen             # Load/create kitchen memory
-        nimbus explore --new living_room            # Start fresh exploration
-        nimbus explore -v 3                         # Debug verbosity
+    [bold]Examples:[/bold]
+        nimbus explore                         # Use default memory
+        nimbus explore --memory kitchen        # Named memory session
+        nimbus explore --new --memory kitchen  # Fresh start
     """
     # Set log verbosity
     from nimbus.core.xrce.logger import set_verbosity
@@ -407,7 +437,7 @@ def explore(
 
 # Memory subcommand group
 memory_app = typer.Typer(help="Manage exploration memories")
-app.add_typer(memory_app, name="memory")
+app.add_typer(memory_app, name="memory", rich_help_panel="Control")
 
 
 @memory_app.command("list")
@@ -491,7 +521,7 @@ def memory_delete(
         raise typer.Exit(1)
 
 
-@app.command()
+@app.command(rich_help_panel="Development")
 def test(
     pattern: str = typer.Argument("", help="Test pattern (pytest style)"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose output"),
@@ -499,12 +529,13 @@ def test(
     coverage: bool = typer.Option(False, "--cov", help="Run with coverage"),
 ):
     """
-    Run Nimbus test suite.
+    Run test suite via pytest.
 
-    Examples:
+    [bold]Examples:[/bold]
         nimbus test                    # All tests
         nimbus test test_vfh           # Specific test
         nimbus test --regression       # Regression tests only
+        nimbus test --cov              # With coverage report
     """
     import subprocess
     import sys
@@ -535,7 +566,7 @@ def test(
 
 # WiFi subcommand group
 wifi_app = typer.Typer(help="WiFi configuration for Yahboom robots")
-app.add_typer(wifi_app, name="wifi")
+app.add_typer(wifi_app, name="wifi", rich_help_panel="Hardware")
 
 
 @wifi_app.command("setup")
@@ -961,7 +992,7 @@ def wifi_discover(
         console.print(f"  [cyan]nimbus wifi discover --probe[/cyan]")
 
 
-@app.command()
+@app.command(rich_help_panel="Control")
 def motor(
     action: str = typer.Argument(..., help="Action: forward, backward, left, right, stop, or velocity"),
     speed: float = typer.Option(0.1, "--speed", "-s", help="Speed for preset actions (m/s or rad/s)"),
@@ -969,16 +1000,13 @@ def motor(
     angular: Optional[float] = typer.Option(None, "--angular", "-a", help="Angular velocity for 'velocity' action"),
 ):
     """
-    Control motors directly (requires nimbus running in motor_test mode).
+    Direct motor control (auto-switches to motor_test mode).
 
-    Preset actions use --speed for magnitude. The 'velocity' action
-    uses --linear and --angular for direct control.
-
-    Examples:
-        nimbus motor forward --speed 0.15     # Move forward
-        nimbus motor left --speed 0.5         # Turn left
-        nimbus motor stop                     # Stop motors
-        nimbus motor velocity -l 0.1 -a 0.2   # Custom velocity
+    [bold]Examples:[/bold]
+        nimbus motor forward --speed 0.15      # Move forward
+        nimbus motor left --speed 0.5          # Turn left
+        nimbus motor stop                      # Stop motors
+        nimbus motor velocity -l 0.1 -a 0.2    # Custom velocity
     """
     import httpx
 
@@ -1036,7 +1064,7 @@ def motor(
         raise typer.Exit(1)
 
 
-@app.command()
+@app.command(rich_help_panel="Development")
 def version():
     """Show Nimbus version."""
     from nimbus import __version__

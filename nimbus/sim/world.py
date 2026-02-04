@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple, List
 import math
+import random
 
 
 @dataclass
@@ -145,6 +146,7 @@ class SimulatedWorld:
         Available templates:
         - empty_room: Simple 5x5m room
         - simple_maze: Room with obstacles
+        - four_rooms: 2x2 grid of rooms connected by doors
 
         Args:
             name: Template name
@@ -164,8 +166,10 @@ class SimulatedWorld:
             return cls._create_empty_room()
         elif name == "simple_maze":
             return cls._create_simple_maze()
+        elif name == "four_rooms":
+            return cls._create_four_rooms()
         else:
-            raise ValueError(f"Unknown template: {name}. Available: empty_room, simple_maze")
+            raise ValueError(f"Unknown template: {name}. Available: empty_room, simple_maze, four_rooms")
 
     @classmethod
     def _create_empty_room(cls, size: float = 5.0, resolution: float = 0.1) -> "SimulatedWorld":
@@ -223,6 +227,163 @@ class SimulatedWorld:
         )
         world._origin_x = 2.5
         world._origin_y = 2.5
+
+        return world
+
+    @classmethod
+    def _create_four_rooms(cls, size: float = 8.0, resolution: float = 0.1, seed: int = 42) -> "SimulatedWorld":
+        """Create a 2x2 grid of rooms connected by doors with random obstacles.
+
+        Layout: 4 quadrant rooms separated by a central cross-wall.
+        Each room has one door to each adjacent room, placed at different
+        positions along each wall to encourage exploration.
+
+        Args:
+            size: Total map size in meters (square)
+            resolution: Meters per grid cell
+            seed: RNG seed for reproducible obstacle placement
+        """
+        cells = int(size / resolution)
+        mid = cells // 2  # Center wall position (40 for 80-cell grid)
+
+        # Initialize grid: all free
+        grid = [[False] * cells for _ in range(cells)]
+
+        # --- Outer walls ---
+        for i in range(cells):
+            grid[0][i] = True           # bottom
+            grid[cells - 1][i] = True   # top
+            grid[i][0] = True           # left  (grid[y][x])
+            grid[i][cells - 1] = True   # right
+
+        # --- Vertical center wall (x = mid) ---
+        for y in range(cells):
+            grid[y][mid] = True
+
+        # --- Horizontal center wall (y = mid) ---
+        for x in range(cells):
+            grid[mid][x] = True
+
+        # --- Carve doors (4-cell gaps for 0.4m clearance) ---
+        # NW <-> NE: vertical wall at x=mid, door near top (y ≈ 55)
+        door_nw_ne_y = mid + (mid * 3 // 4)  # y=55 in 80-cell grid
+        for dy in range(4):
+            grid[door_nw_ne_y + dy][mid] = False
+
+        # SW <-> SE: vertical wall at x=mid, door near bottom (y ≈ 25)
+        door_sw_se_y = mid // 2 + mid // 8   # y=25 in 80-cell grid
+        for dy in range(4):
+            grid[door_sw_se_y + dy][mid] = False
+
+        # NW <-> SW: horizontal wall at y=mid, door near left (x ≈ 15)
+        door_nw_sw_x = mid // 2 - mid // 8   # 20 - 5 = 15
+        for dx in range(4):
+            grid[mid][door_nw_sw_x + dx] = False
+
+        # NE <-> SE: horizontal wall at y=mid, door near right (x ≈ 60)
+        door_ne_se_x = mid + mid // 2        # 40 + 20 = 60
+        for dx in range(4):
+            grid[mid][door_ne_se_x + dx] = False
+
+        # --- Door center positions (for clearance checks) ---
+        door_centers = [
+            (mid, door_nw_ne_y + 2),
+            (mid, door_sw_se_y + 2),
+            (door_nw_sw_x + 2, mid),
+            (door_ne_se_x + 2, mid),
+        ]
+
+        # --- Random obstacles ---
+        rng = random.Random(seed)
+
+        # Define room interiors (min_x, max_x, min_y, max_y) in grid coords
+        margin = 3  # cells from walls
+        rooms = [
+            # SW: x in [1..mid-1], y in [1..mid-1]
+            (1 + margin, mid - 1 - margin, 1 + margin, mid - 1 - margin),
+            # SE: x in [mid+1..cells-2], y in [1..mid-1]
+            (mid + 1 + margin, cells - 2 - margin, 1 + margin, mid - 1 - margin),
+            # NW: x in [1..mid-1], y in [mid+1..cells-2]
+            (1 + margin, mid - 1 - margin, mid + 1 + margin, cells - 2 - margin),
+            # NE: x in [mid+1..cells-2], y in [mid+1..cells-2]
+            (mid + 1 + margin, cells - 2 - margin, mid + 1 + margin, cells - 2 - margin),
+        ]
+
+        # Spawn point in grid coords (center of SW room)
+        spawn_gx = (1 + mid - 1) // 2   # ~20
+        spawn_gy = (1 + mid - 1) // 2   # ~20
+
+        # Obstacle shapes: list of (dx, dy) offsets
+        shapes = [
+            [(0, 0)],                                           # 1×1 point
+            [(0, 0), (1, 0), (0, 1), (1, 1)],                 # 2×2 block
+            [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)], # 3×2 rectangle
+            [(0, 0), (0, 1), (0, 2), (1, 0)],                 # L-shape
+            [(0, 0), (1, 0), (1, 1), (1, 2)],                 # reverse-L
+        ]
+
+        door_clearance = 5
+        spawn_clearance = 5
+
+        for room_x_min, room_x_max, room_y_min, room_y_max in rooms:
+            num_obstacles = rng.randint(3, 5)
+            placed = 0
+            attempts = 0
+            while placed < num_obstacles and attempts < 100:
+                attempts += 1
+                shape = rng.choice(shapes)
+                ox = rng.randint(room_x_min, room_x_max)
+                oy = rng.randint(room_y_min, room_y_max)
+
+                # Compute all cells this shape would occupy
+                cells_to_place = [(ox + dx, oy + dy) for dx, dy in shape]
+
+                # Check bounds
+                if any(cx < room_x_min or cx > room_x_max or
+                       cy < room_y_min or cy > room_y_max
+                       for cx, cy in cells_to_place):
+                    continue
+
+                # Check door clearance
+                too_close_to_door = False
+                for cx, cy in cells_to_place:
+                    for dcx, dcy in door_centers:
+                        if abs(cx - dcx) + abs(cy - dcy) < door_clearance:
+                            too_close_to_door = True
+                            break
+                    if too_close_to_door:
+                        break
+                if too_close_to_door:
+                    continue
+
+                # Check spawn clearance
+                if any(abs(cx - spawn_gx) + abs(cy - spawn_gy) < spawn_clearance
+                       for cx, cy in cells_to_place):
+                    continue
+
+                # Check no overlap with existing obstacles
+                if any(grid[cy][cx] for cx, cy in cells_to_place):
+                    continue
+
+                # Place it
+                for cx, cy in cells_to_place:
+                    grid[cy][cx] = True
+                placed += 1
+
+        # --- Build world ---
+        world = cls(
+            grid=grid,
+            resolution=resolution,
+            width=cells,
+            height=cells,
+        )
+        world._origin_x = size / 2
+        world._origin_y = size / 2
+
+        # Spawn in center of SW room
+        world.robot_x = spawn_gx * resolution - world._origin_x + resolution / 2
+        world.robot_y = spawn_gy * resolution - world._origin_y + resolution / 2
+        world.robot_theta = 0.0
 
         return world
 
