@@ -484,17 +484,25 @@ class LiveDashboard:
         viz = self._render_map_ascii(obstacle_map, sensors.pose)
         self._layout["map"].update(Panel(viz, title="Map View", border_style="green"))
 
+    @staticmethod
+    def _heading_arrow(theta_rad: float) -> str:
+        """Map heading angle to directional arrow character."""
+        arrows = ['→', '↗', '↑', '↖', '←', '↙', '↓', '↘']
+        index = round(theta_rad / (math.pi / 4)) % 8
+        return arrows[index]
+
     def _render_map_ascii(self, obstacle_map, robot_pose) -> Text:
         """
         Render accumulated obstacle map as ASCII.
 
         Symbols:
           ' ' = unknown/unexplored
-          '.' = free space (dim)
           '#' = high-confidence obstacle (red)
           '+' = lower-confidence obstacle (yellow)
           '~' = robot trail (cyan)
-          'R' = robot position (bold green)
+          directional arrow = robot position (bold green)
+
+        Includes compass rose in top-right corner.
         """
         width = 29
         height = 12
@@ -539,18 +547,6 @@ class LiveDashboard:
             cy = int(height / 2 - (wy - center_y) * scale)  # Y is inverted
             return (cx, cy)
 
-        # Draw visited cells (free space)
-        for cell in obstacle_map.get_visited():
-            cell_x, cell_y = cell
-            # Convert cell center to world coords
-            wx = (cell_x + 0.5) * obstacle_map.config.cell_size
-            wy = (cell_y + 0.5) * obstacle_map.config.cell_size
-            cx, cy = world_to_canvas(wx, wy)
-            if 0 <= cx < width and 0 <= cy < height:
-                if canvas[cy][cx] == ' ':  # Don't overwrite obstacles
-                    canvas[cy][cx] = '.'
-                    canvas_styles[cy][cx] = "dim"
-
         # Draw obstacles
         for cell, confidence in obstacle_map.get_obstacles().items():
             cell_x, cell_y = cell
@@ -571,16 +567,35 @@ class LiveDashboard:
             cx, cy = world_to_canvas(wx, wy)
             if 0 <= cx < width and 0 <= cy < height:
                 # Only draw trail on free space, not on obstacles
-                if canvas[cy][cx] in (' ', '.'):
+                if canvas[cy][cx] == ' ':
                     canvas[cy][cx] = '~'
                     canvas_styles[cy][cx] = "cyan"
 
-        # Draw robot position
+        # Draw robot position with directional arrow
+        robot_arrow = '→'
         if robot_pose:
+            robot_arrow = self._heading_arrow(robot_pose.theta)
             cx, cy = world_to_canvas(robot_pose.x, robot_pose.y)
             if 0 <= cx < width and 0 <= cy < height:
-                canvas[cy][cx] = 'R'
+                canvas[cy][cx] = robot_arrow
                 canvas_styles[cy][cx] = "bold green"
+
+        # Draw compass rose in top-right corner
+        compass_x = width - 5
+        #   N
+        # W · E
+        #   S
+        compass_chars = [
+            (compass_x + 2, 0, 'N', 'dim white'),
+            (compass_x, 1, 'W', 'dim white'),
+            (compass_x + 2, 1, robot_arrow, 'bold green'),
+            (compass_x + 4, 1, 'E', 'dim white'),
+            (compass_x + 2, 2, 'S', 'dim white'),
+        ]
+        for cx_c, cy_c, char, style in compass_chars:
+            if 0 <= cx_c < width and 0 <= cy_c < height:
+                canvas[cy_c][cx_c] = char
+                canvas_styles[cy_c][cx_c] = style
 
         # Build Rich Text output
         lines = []
@@ -592,8 +607,8 @@ class LiveDashboard:
 
         # Add info line
         obs_count = obstacle_map.num_obstacles
-        free_count = obstacle_map.num_visited
-        lines.append(Text(f" Obs:{obs_count} Free:{free_count}", style="dim"))
+        heading_deg = int(math.degrees(robot_pose.theta)) % 360 if robot_pose else 0
+        lines.append(Text(f" #:walls ~:trail  Hdg:{heading_deg}°", style="dim"))
 
         # Join lines
         result = Text()
