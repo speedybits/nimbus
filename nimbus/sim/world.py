@@ -264,33 +264,35 @@ class SimulatedWorld:
         for x in range(cells):
             grid[mid][x] = True
 
-        # --- Carve doors (4-cell gaps for 0.4m clearance) ---
-        # NW <-> NE: vertical wall at x=mid, door near top (y ≈ 55)
-        door_nw_ne_y = mid + (mid * 3 // 4)  # y=55 in 80-cell grid
-        for dy in range(4):
+        # --- Carve doors (8-cell gaps for 0.8m clearance) ---
+        door_width = 8
+
+        # NW <-> NE: vertical wall at x=mid, door in upper quarter
+        door_nw_ne_y = mid + mid // 2  # y=60 in 80-cell grid
+        for dy in range(door_width):
             grid[door_nw_ne_y + dy][mid] = False
 
-        # SW <-> SE: vertical wall at x=mid, door near bottom (y ≈ 25)
-        door_sw_se_y = mid // 2 + mid // 8   # y=25 in 80-cell grid
-        for dy in range(4):
+        # SW <-> SE: vertical wall at x=mid, door in lower quarter
+        door_sw_se_y = mid // 4  # y=10 in 80-cell grid
+        for dy in range(door_width):
             grid[door_sw_se_y + dy][mid] = False
 
-        # NW <-> SW: horizontal wall at y=mid, door near left (x ≈ 15)
-        door_nw_sw_x = mid // 2 - mid // 8   # 20 - 5 = 15
-        for dx in range(4):
+        # NW <-> SW: horizontal wall at y=mid, door in left quarter
+        door_nw_sw_x = mid // 4  # x=10 in 80-cell grid
+        for dx in range(door_width):
             grid[mid][door_nw_sw_x + dx] = False
 
-        # NE <-> SE: horizontal wall at y=mid, door near right (x ≈ 60)
-        door_ne_se_x = mid + mid // 2        # 40 + 20 = 60
-        for dx in range(4):
+        # NE <-> SE: horizontal wall at y=mid, door in right quarter
+        door_ne_se_x = mid + mid // 2  # x=60 in 80-cell grid
+        for dx in range(door_width):
             grid[mid][door_ne_se_x + dx] = False
 
         # --- Door center positions (for clearance checks) ---
         door_centers = [
-            (mid, door_nw_ne_y + 2),
-            (mid, door_sw_se_y + 2),
-            (door_nw_sw_x + 2, mid),
-            (door_ne_se_x + 2, mid),
+            (mid, door_nw_ne_y + door_width // 2),
+            (mid, door_sw_se_y + door_width // 2),
+            (door_nw_sw_x + door_width // 2, mid),
+            (door_ne_se_x + door_width // 2, mid),
         ]
 
         # --- Random obstacles ---
