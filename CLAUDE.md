@@ -121,6 +121,11 @@ Claude control endpoints (blocking API for precise movement):
 - `POST /api/claude/stop` - Cancel current command
 - `GET /api/claude/status` - Get current command status
 
+Claude high-level endpoints (spatial reasoning + navigation):
+- `GET /api/claude/scan` - Processed surroundings: wall distances, openings, closest obstacle (all compass bearings)
+- `POST /api/claude/goto?x=2.0&y=0.5&timeout=60` - Navigate to coordinate with VFH obstacle avoidance (blocking)
+- `GET /api/claude/map` - Accumulated obstacle map as ASCII art + metadata
+
 ## Motor Control
 
 Direct motor control via CLI (requires nimbus running):

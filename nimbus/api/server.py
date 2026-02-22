@@ -21,11 +21,119 @@ from .schemas import (
     SensorResponse,
     ClaudeCommandResponse,
     ClaudeStatusResponse,
+    ClaudeScanOpening,
+    ClaudeScanResponse,
+    ClaudeGotoResponse,
+    ClaudeMapResponse,
 )
+
+import math
 
 # Global reference to runner (set by start_api_background)
 _runner = None
 _api_thread = None
+
+
+def safe_float(v: float) -> float | None:
+    """Sanitize float for JSON (inf/nan -> None)."""
+    if v is None or math.isinf(v) or math.isnan(v):
+        return None
+    return v
+
+
+def _math_to_compass(theta_rad: float) -> float:
+    """Convert math-convention angle (0=east, CCW+) to compass bearing (0=N, CW+)."""
+    return (90 - math.degrees(theta_rad)) % 360
+
+
+def _heading_arrow(theta_rad: float) -> str:
+    """Map heading angle to directional arrow character."""
+    arrows = ['→', '↗', '↑', '↖', '←', '↙', '↓', '↘']
+    index = round(theta_rad / (math.pi / 4)) % 8
+    return arrows[index]
+
+
+def _render_map_plain(obstacle_map, robot_pose, width: int = 60, height: int = 25) -> str:
+    """
+    Render obstacle map as plain ASCII text (no Rich formatting).
+
+    Adapted from dashboard._render_map_ascii() for API consumption.
+    """
+    canvas = [[' '] * width for _ in range(height)]
+
+    # Get map bounds with padding
+    min_x, min_y, max_x, max_y = obstacle_map.get_bounds()
+
+    padding = 0.5
+    min_x -= padding
+    min_y -= padding
+    max_x += padding
+    max_y += padding
+
+    world_width = max(max_x - min_x, 2.0)
+    world_height = max(max_y - min_y, 2.0)
+
+    # Scale factors (divide by 2 for width to account for character aspect ratio)
+    scale_x = (width - 2) / world_width / 2.0
+    scale_y = (height - 2) / world_height
+    scale = min(scale_x, scale_y)
+
+    center_x = (min_x + max_x) / 2
+    center_y = (min_y + max_y) / 2
+
+    def world_to_canvas(wx: float, wy: float) -> tuple[int, int]:
+        cx = int((wx - center_x) * scale * 2 + width / 2)
+        cy = int(height / 2 - (wy - center_y) * scale)  # Y inverted
+        return (cx, cy)
+
+    # Draw obstacles
+    for cell, confidence in obstacle_map.get_obstacles().items():
+        cell_x, cell_y = cell
+        wx = (cell_x + 0.5) * obstacle_map.config.cell_size
+        wy = (cell_y + 0.5) * obstacle_map.config.cell_size
+        cx, cy = world_to_canvas(wx, wy)
+        if 0 <= cx < width and 0 <= cy < height:
+            canvas[cy][cx] = '#' if confidence >= 0.6 else '+'
+
+    # Draw robot trail with interpolation
+    trail = obstacle_map.get_robot_trail()
+    trail_canvas = [world_to_canvas(wx, wy) for wx, wy in trail]
+    for i in range(len(trail_canvas) - 1):
+        x0, y0 = trail_canvas[i]
+        x1, y1 = trail_canvas[i + 1]
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        steps = max(dx, dy, 1)
+        for s in range(steps + 1):
+            t = s / steps
+            cx = int(x0 + t * (x1 - x0) + 0.5)
+            cy = int(y0 + t * (y1 - y0) + 0.5)
+            if 0 <= cx < width and 0 <= cy < height:
+                if canvas[cy][cx] == ' ':
+                    canvas[cy][cx] = '~'
+
+    # Draw robot position
+    robot_arrow = '→'
+    if robot_pose:
+        robot_arrow = _heading_arrow(robot_pose.theta)
+        cx, cy = world_to_canvas(robot_pose.x, robot_pose.y)
+        if 0 <= cx < width and 0 <= cy < height:
+            canvas[cy][cx] = robot_arrow
+
+    # Draw compass rose in top-right corner
+    compass_x = width - 5
+    compass_chars = [
+        (compass_x + 2, 0, 'N'),
+        (compass_x, 1, 'W'),
+        (compass_x + 2, 1, robot_arrow),
+        (compass_x + 4, 1, 'E'),
+        (compass_x + 2, 2, 'S'),
+    ]
+    for cx_c, cy_c, char in compass_chars:
+        if 0 <= cx_c < width and 0 <= cy_c < height:
+            canvas[cy_c][cx_c] = char
+
+    return '\n'.join(''.join(row) for row in canvas)
 
 
 def create_app() -> FastAPI:
@@ -74,7 +182,6 @@ def create_app() -> FastAPI:
         sensors = ctx.sensors
 
         # Sanitize obstacle distance for JSON (inf -> None)
-        import math
         obstacle = sensors.closest_obstacle if sensors else None
         if obstacle is not None and (math.isinf(obstacle) or math.isnan(obstacle)):
             obstacle = None
@@ -110,11 +217,6 @@ def create_app() -> FastAPI:
 
         if not sensors:
             raise HTTPException(503, detail="No sensor data available")
-
-        # Sanitize float values for JSON (inf -> None)
-        import math
-        def safe_float(v: float) -> float | None:
-            return None if math.isinf(v) or math.isnan(v) else v
 
         # Odom buffer diagnostics
         odom_age = None
@@ -549,6 +651,220 @@ def create_app() -> FastAPI:
         return ClaudeStatusResponse(
             state=status["state"],
             command=status["command"],
+        )
+
+    # --- Claude High-Level Endpoints ---
+
+    @app.get("/api/claude/scan", response_model=ClaudeScanResponse)
+    async def claude_scan():
+        """
+        Get a processed, world-relative summary of surroundings.
+
+        Returns compass-bearing openings, wall distances, and closest obstacle
+        so the caller can reason spatially without doing trig.
+        """
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        ctx = _runner.context
+        sensors = ctx.sensors
+        if not sensors or not sensors.lidar_ranges:
+            raise HTTPException(503, detail="No sensor data available")
+
+        import numpy as np
+        from nimbus.sensors.lidar import LidarProcessor, LidarConfig
+        from nimbus.navigation.vfh import VFHNavigator, VFHConfig
+
+        ranges = np.array(sensors.lidar_ranges, dtype=np.float32)
+        robot_theta = sensors.pose.theta
+
+        # Fresh processors (no shared state, thread-safe)
+        lidar = LidarProcessor(LidarConfig())
+        vfh = VFHNavigator(VFHConfig())
+
+        # Wall distances in 8 cardinal directions
+        sector_ranges = lidar.get_sector_ranges(ranges)
+        walls = {k: safe_float(v) for k, v in sector_ranges.items()}
+
+        # Closest obstacle
+        closest_dist, closest_angle_rad = lidar.find_closest(ranges)
+        closest_obstacle = None
+        if closest_dist != float('inf'):
+            # Convert robot-relative angle to world compass bearing
+            world_angle = robot_theta + closest_angle_rad
+            closest_obstacle = {
+                "distance": round(closest_dist, 2),
+                "bearing": round(_math_to_compass(world_angle)),
+            }
+
+        # Find openings via VFH
+        histogram = lidar.process(ranges)
+        smoothed = vfh._smooth_histogram(histogram)
+        blocked_sectors = smoothed > vfh.config.threshold_high
+        valleys = vfh._find_valleys(blocked_sectors)
+
+        openings = []
+        for valley in valleys:
+            # Convert robot-relative valley center to world compass bearing
+            world_angle = robot_theta + valley.center_angle
+            bearing = _math_to_compass(world_angle)
+            width_deg = valley.width * (360.0 / vfh.config.num_sectors)
+
+            # Sample LIDAR range at valley center direction
+            # Valley center_angle is robot-relative, map to LIDAR index
+            lidar_deg = math.degrees(valley.center_angle) % 360
+            lidar_idx = int(lidar_deg) % len(ranges)
+            distance = float(ranges[lidar_idx])
+            distance = safe_float(distance)
+
+            openings.append(ClaudeScanOpening(
+                bearing=round(bearing),
+                width_degrees=round(width_deg),
+                distance=round(distance, 2) if distance else None,
+                is_wide=width_deg >= 40,
+            ))
+
+        heading = _math_to_compass(robot_theta)
+
+        return ClaudeScanResponse(
+            pose={
+                "x": round(sensors.pose.x, 2),
+                "y": round(sensors.pose.y, 2),
+                "heading": round(heading),
+            },
+            closest_obstacle=closest_obstacle,
+            walls=walls,
+            openings=openings,
+            timestamp=sensors.timestamp.isoformat(),
+        )
+
+    @app.post("/api/claude/goto", response_model=ClaudeGotoResponse)
+    async def claude_goto(
+        x: float,
+        y: float,
+        timeout: float = 60.0,
+    ):
+        """
+        Navigate to a coordinate using VFH obstacle avoidance (blocking).
+
+        Args:
+            x: Target X coordinate in meters
+            y: Target Y coordinate in meters
+            timeout: Maximum time in seconds (default 60)
+        """
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        from nimbus.behaviors.goto import GoToBehavior
+
+        goto_behavior = _runner._behavior_manager.get_behavior("goto")
+        if not goto_behavior or not isinstance(goto_behavior, GoToBehavior):
+            raise HTTPException(500, detail="GoTo behavior not found")
+
+        # Set target and activate
+        goto_behavior.set_target(x, y)
+        _runner.set_behavior("goto")
+
+        start_time = time.time()
+        last_pose = None
+        last_move_time = start_time
+
+        def _wait_for_goto():
+            nonlocal last_pose, last_move_time
+
+            while True:
+                elapsed = time.time() - start_time
+                if elapsed > timeout:
+                    return "timeout"
+
+                if goto_behavior.reached_goal:
+                    return "reached"
+
+                # Stuck detection: hasn't moved >2cm in 5 seconds
+                sensors = _runner.context.sensors
+                if sensors:
+                    current = (sensors.pose.x, sensors.pose.y)
+                    if last_pose is not None:
+                        dx = current[0] - last_pose[0]
+                        dy = current[1] - last_pose[1]
+                        if math.sqrt(dx * dx + dy * dy) > 0.02:
+                            last_pose = current
+                            last_move_time = time.time()
+                    else:
+                        last_pose = current
+                        last_move_time = time.time()
+
+                    if time.time() - last_move_time > 5.0:
+                        return "stuck"
+
+                time.sleep(0.2)
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _wait_for_goto)
+
+        # Switch back to claude_control so robot stops
+        _runner.set_behavior("claude_control")
+
+        duration = time.time() - start_time
+        sensors = _runner.context.sensors
+        final_x = sensors.pose.x if sensors else 0
+        final_y = sensors.pose.y if sensors else 0
+        final_theta = sensors.pose.theta if sensors else 0
+        dist_remaining = math.sqrt((x - final_x) ** 2 + (y - final_y) ** 2)
+
+        return ClaudeGotoResponse(
+            success=(result == "reached"),
+            result=result,
+            target={"x": x, "y": y},
+            final_pose={
+                "x": round(final_x, 2),
+                "y": round(final_y, 2),
+                "heading": round(_math_to_compass(final_theta)),
+            },
+            distance_remaining=round(dist_remaining, 2),
+            duration=round(duration, 1),
+        )
+
+    @app.get("/api/claude/map", response_model=ClaudeMapResponse)
+    async def claude_map():
+        """
+        Return the accumulated obstacle map as ASCII art with metadata.
+        """
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        obstacle_map = _runner.obstacle_map
+        sensors = _runner.context.sensors
+        robot_pose = sensors.pose if sensors else None
+
+        ascii_map = _render_map_plain(obstacle_map, robot_pose)
+
+        min_x, min_y, max_x, max_y = obstacle_map.get_bounds()
+
+        trail = obstacle_map.get_robot_trail()
+        trail_dicts = [{"x": round(tx, 2), "y": round(ty, 2)} for tx, ty in trail]
+
+        heading = _math_to_compass(robot_pose.theta) if robot_pose else 0
+
+        return ClaudeMapResponse(
+            ascii_map=ascii_map,
+            bounds={
+                "min_x": round(min_x, 2),
+                "min_y": round(min_y, 2),
+                "max_x": round(max_x, 2),
+                "max_y": round(max_y, 2),
+            },
+            stats={
+                "num_obstacles": obstacle_map.num_obstacles,
+                "num_visited": obstacle_map.num_visited,
+                "cell_size_m": obstacle_map.config.cell_size,
+            },
+            robot_trail=trail_dicts,
+            pose={
+                "x": round(robot_pose.x, 2) if robot_pose else 0,
+                "y": round(robot_pose.y, 2) if robot_pose else 0,
+                "heading": round(heading),
+            },
         )
 
     return app

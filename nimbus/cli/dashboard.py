@@ -561,15 +561,24 @@ class LiveDashboard:
                     canvas[cy][cx] = '+'
                     canvas_styles[cy][cx] = "yellow"
 
-        # Draw robot trail
-        trail = obstacle_map.get_robot_trail(max_points=30)
-        for wx, wy in trail[:-1]:  # Skip last point (current position)
-            cx, cy = world_to_canvas(wx, wy)
-            if 0 <= cx < width and 0 <= cy < height:
-                # Only draw trail on free space, not on obstacles
-                if canvas[cy][cx] == ' ':
-                    canvas[cy][cx] = '~'
-                    canvas_styles[cy][cx] = "cyan"
+        # Draw robot trail — interpolate between points for continuous path
+        trail = obstacle_map.get_robot_trail()
+        trail_canvas = [world_to_canvas(wx, wy) for wx, wy in trail]
+        for i in range(len(trail_canvas) - 1):  # Skip last point (current pos)
+            x0, y0 = trail_canvas[i]
+            x1, y1 = trail_canvas[i + 1]
+            # Bresenham-style interpolation between consecutive points
+            dx = abs(x1 - x0)
+            dy = abs(y1 - y0)
+            steps = max(dx, dy, 1)
+            for s in range(steps + 1):
+                t = s / steps
+                cx = int(x0 + t * (x1 - x0) + 0.5)
+                cy = int(y0 + t * (y1 - y0) + 0.5)
+                if 0 <= cx < width and 0 <= cy < height:
+                    if canvas[cy][cx] == ' ':
+                        canvas[cy][cx] = '~'
+                        canvas_styles[cy][cx] = "cyan"
 
         # Draw robot position with directional arrow
         robot_arrow = '→'

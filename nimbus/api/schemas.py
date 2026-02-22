@@ -86,3 +86,40 @@ class ClaudeStatusResponse(BaseModel):
     """Status of Claude control behavior."""
     state: str = Field(..., description="Current state: idle, moving, turning, complete, error")
     command: Optional[dict] = Field(None, description="Current command details if active")
+
+
+class ClaudeScanOpening(BaseModel):
+    """A navigable opening detected in the LIDAR scan."""
+    bearing: float = Field(..., description="Compass bearing in degrees (0=N, 90=E)")
+    width_degrees: float = Field(..., description="Angular width of opening in degrees")
+    distance: Optional[float] = Field(None, description="Range at center of opening (meters)")
+    is_wide: bool = Field(..., description="True if opening >= 40 degrees wide")
+
+
+class ClaudeScanResponse(BaseModel):
+    """Processed LIDAR scan with world-relative spatial summary."""
+    pose: dict = Field(..., description="Robot pose: x, y (meters), heading (compass degrees)")
+    closest_obstacle: Optional[dict] = Field(None, description="Nearest obstacle: distance (m), bearing (compass deg)")
+    walls: dict = Field(..., description="Min range in 8 cardinal/intercardinal directions (meters, null if clear)")
+    openings: list[ClaudeScanOpening] = Field(default_factory=list, description="Navigable openings")
+    timestamp: str = Field(..., description="ISO timestamp")
+
+
+class ClaudeGotoResponse(BaseModel):
+    """Response from blocking goto navigation command."""
+    success: bool = Field(..., description="Whether robot reached the target")
+    result: str = Field(..., description="Outcome: reached, timeout, stuck, cancelled")
+    target: dict = Field(..., description="Requested target: x, y")
+    final_pose: dict = Field(..., description="Final pose: x, y, heading (compass degrees)")
+    distance_remaining: float = Field(..., description="Distance to target at completion (meters)")
+    duration: float = Field(..., description="Elapsed time in seconds")
+
+
+class ClaudeMapResponse(BaseModel):
+    """Obstacle map as ASCII art with metadata."""
+    ascii_map: str = Field(..., description="Plain-text map with obstacles, trail, and robot")
+    bounds: dict = Field(..., description="World coordinate bounds: min_x, min_y, max_x, max_y")
+    stats: dict = Field(..., description="Map statistics: num_obstacles, num_visited, cell_size_m")
+    robot_trail: list[dict] = Field(default_factory=list, description="Recent robot positions: x, y")
+    pose: dict = Field(..., description="Current robot pose: x, y, heading (compass degrees)")
+    legend: str = Field(default="# = wall  + = uncertain  ~ = trail  arrow = robot")

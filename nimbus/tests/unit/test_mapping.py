@@ -175,20 +175,37 @@ class TestRobotTrail:
         # Should have multiple trail points (depends on movement threshold)
         assert len(trail) >= 2
 
-    def test_trail_max_length(self):
-        """Trail is limited to max_trail_points."""
-        config = MapConfig(cell_size=0.15, max_trail_points=5)
+    def test_trail_persists(self):
+        """Trail keeps full history (no truncation) once active."""
+        config = MapConfig(cell_size=0.15)
         obs_map = ObstacleMap(config)
 
         ranges = tuple([float('inf')] * 360)
 
-        # Move robot many times
+        # Move robot many times (0.1m steps, trail activates after 0.15m)
         for i in range(20):
             pose = Pose2D(x=i * 0.1, y=0.0, theta=0.0)
             obs_map.update(pose, ranges)
 
         trail = obs_map.get_robot_trail()
-        assert len(trail) <= config.max_trail_points
+        # First point is origin (skipped), trail activates at ~0.2m,
+        # then records every 0.1m step (>5cm threshold)
+        assert len(trail) >= 17
+
+    def test_trail_deferred_at_startup(self):
+        """Trail doesn't record until robot moves 15cm from start."""
+        config = MapConfig(cell_size=0.15)
+        obs_map = ObstacleMap(config)
+
+        ranges = tuple([float('inf')] * 360)
+
+        # Small movements under 15cm from origin
+        for i in range(10):
+            pose = Pose2D(x=i * 0.01, y=0.0, theta=0.0)
+            obs_map.update(pose, ranges)
+
+        trail = obs_map.get_robot_trail()
+        assert len(trail) == 0
 
 
 class TestConfidence:

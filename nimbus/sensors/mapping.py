@@ -44,6 +44,8 @@ class ObstacleMap:
         self._obstacles: dict[tuple[int, int], float] = {}
         self._visited: set[tuple[int, int]] = set()
         self._robot_trail: list[tuple[float, float]] = []
+        self._trail_origin: Optional[tuple[float, float]] = None
+        self._trail_active: bool = False
         self._last_pose: Optional[Pose2D] = None
 
     def _world_to_cell(self, x: float, y: float) -> tuple[int, int]:
@@ -108,7 +110,24 @@ class ObstacleMap:
         self._last_pose = pose
 
     def _update_trail(self, pose: Pose2D) -> None:
-        """Update robot trail with new position."""
+        """Update robot trail with new position.
+
+        Trail recording is deferred until the robot has moved at least 0.15m
+        from its initial position, avoiding startup drift artifacts.
+        """
+        # Remember where the robot started
+        if self._trail_origin is None:
+            self._trail_origin = (pose.x, pose.y)
+            return
+
+        # Don't record trail until robot has moved meaningfully from start
+        if not self._trail_active:
+            ox, oy = self._trail_origin
+            dist_from_origin = math.sqrt((pose.x - ox) ** 2 + (pose.y - oy) ** 2)
+            if dist_from_origin < 0.15:  # 15cm threshold
+                return
+            self._trail_active = True
+
         # Only add if moved significantly from last trail point
         if self._robot_trail:
             last_x, last_y = self._robot_trail[-1]
@@ -117,10 +136,6 @@ class ObstacleMap:
                 return
 
         self._robot_trail.append((pose.x, pose.y))
-
-        # Trim trail to max length
-        if len(self._robot_trail) > self.config.max_trail_points:
-            self._robot_trail = self._robot_trail[-self.config.max_trail_points:]
 
     def _trace_ray_free(self, x0: float, y0: float, x1: float, y1: float) -> None:
         """
@@ -213,6 +228,8 @@ class ObstacleMap:
         self._obstacles.clear()
         self._visited.clear()
         self._robot_trail.clear()
+        self._trail_origin = None
+        self._trail_active = False
         self._last_pose = None
 
     @property
