@@ -7,7 +7,7 @@
 ## Features
 
 - **Lightweight** — No Nav2, no AMCL, no complex costmaps. Just pure Python.
-- **ROS2-Free** — Communicates directly with ESP32 via XRCE-DDS (no Docker required)
+- **ROS2-Free** — Communicates directly with ESP32 via XRCE-DDS or Neato via serial (no Docker required)
 - **Safe** — Hardware safety layer that cannot be bypassed
 - **Beautiful CLI** — Rich terminal interface with live dashboard
 - **API-First** — REST + WebSocket for Home Assistant, custom dashboards, AI integration
@@ -37,7 +37,8 @@ nimbus run --behavior wander
 ## Requirements
 
 - Python 3.10+
-- ESP32 robot with Micro-ROS firmware (for hardware mode)
+- **ESP32 mode**: ESP32 robot with Micro-ROS firmware
+- **Neato mode**: Neato vacuum with serial connection + `pip install pyserial`
 
 No ROS2 or Docker required!
 
@@ -71,19 +72,19 @@ No ROS2 or Docker required!
                               │
 ┌─────────────────────────────────────────────────────────────┐
 │                    Core Layer                               │
-│              XRCENode │ State Machine │ Config              │
+│              XRCENode │ NeatoNode │ State Machine │ Config  │
 └─────────────────────────────────────────────────────────────┘
-                              │
-                    ┌──────────────────────┐
-                    │ XRCEAgent            │
-                    │ (Pure Python)        │
-                    │  /scan /odom_raw     │
-                    └──────────────────────┘
-                              │
-                    ┌─────────────────┐
-                    │   ESP32 + Motors │
-                    │   (Micro-ROS)   │
-                    └─────────────────┘
+                     │                    │
+        ┌────────────────────┐  ┌──────────────────────┐
+        │ XRCEAgent          │  │ NeatoTransport       │
+        │ (Pure Python)      │  │ (pyserial 115200)    │
+        │  /scan /odom_raw   │  │  GetLDSScan/SetMotor │
+        └────────────────────┘  └──────────────────────┘
+                     │                    │
+        ┌─────────────────┐    ┌──────────────────┐
+        │  ESP32 + Motors  │    │  Neato Vacuum MCU │
+        │  (Micro-ROS)    │    │  (Serial debug)   │
+        └─────────────────┘    └──────────────────┘
 ```
 
 ## CLI Commands
@@ -91,6 +92,7 @@ No ROS2 or Docker required!
 | Command | Description |
 |---------|-------------|
 | `nimbus run` | Start robot controller with live dashboard |
+| `nimbus run --transport neato` | Start with Neato serial transport |
 | `nimbus run --discover` | Start with ESP32 auto-discovery |
 | `nimbus run --mock` | Start in mock mode (no hardware) |
 | `nimbus status` | Show current robot state |
@@ -150,6 +152,11 @@ api:
 
 agent:
   agent_port: 8090         # UDP port for ESP32 communication
+
+neato:
+  port: "/dev/ttyACM0"     # Serial port for Neato vacuum
+  scan_rate_hz: 5.0        # LIDAR polling rate
+  odom_rate_hz: 10.0       # Encoder polling rate
 ```
 
 Environment variables (override config):
@@ -158,6 +165,7 @@ export NIMBUS_MAX_SPEED=0.25
 export NIMBUS_API_PORT=9000
 export NIMBUS_SAFETY_RADIUS=0.35
 export NIMBUS_AGENT_PORT=8090
+export NIMBUS_NEATO_PORT=/dev/ttyTHS1
 ```
 
 ## Behaviors
@@ -193,7 +201,7 @@ Nimbus includes a hardware safety layer that **cannot be bypassed**:
 ```
 nimbus/
 ├── nimbus/
-│   ├── core/           # XRCE agent, state machine, config
+│   ├── core/           # XRCE agent, Neato transport, state machine, config
 │   ├── sensors/        # LIDAR processing, odometry, obstacle mapping
 │   ├── navigation/     # VFH algorithm, safety controller
 │   ├── behaviors/      # idle, wander, goto, patrol
