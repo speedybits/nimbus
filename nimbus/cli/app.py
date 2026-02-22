@@ -144,7 +144,13 @@ def run(
         subtitle="Press Ctrl+C to stop"
     ))
 
-    if neato:
+    if neato and sim:
+        console.print("[green]Mode:[/green] Neato Simulation (SimulatedWorld physics)")
+        if map_file:
+            console.print(f"[green]Map:[/green] {map_file}")
+        else:
+            console.print(f"[green]Map:[/green] {map_template or 'empty_room'}")
+    elif neato:
         console.print("[green]Mode:[/green] Neato Serial Transport")
     elif sim:
         console.print("[green]Mode:[/green] Simulation")

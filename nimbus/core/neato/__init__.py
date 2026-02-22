@@ -7,5 +7,6 @@ using the vacuum's built-in LIDAR, motors, and sensors.
 
 from .node import NeatoNode
 from .transport import NeatoTransport
+from .sim_transport import SimNeatoTransport
 
-__all__ = ["NeatoNode", "NeatoTransport"]
+__all__ = ["NeatoNode", "NeatoTransport", "SimNeatoTransport"]

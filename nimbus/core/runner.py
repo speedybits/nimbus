@@ -141,12 +141,40 @@ class NimbusRunner:
         if self._neato:
             from nimbus.core.neato import NeatoNode
             neato_config = self.config.neato
-            self._node = NeatoNode(
-                port=neato_config.port,
-                scan_rate_hz=neato_config.scan_rate_hz,
-                odom_rate_hz=neato_config.odom_rate_hz,
-                cmd_rate_hz=neato_config.cmd_rate_hz,
-            )
+
+            if self._sim:
+                # Neato simulation: SimulatedWorld physics + NeatoNode threads
+                from nimbus.core.neato import SimNeatoTransport
+                from nimbus.sim import SimulatedWorld
+                from pathlib import Path
+
+                sim_config = self.config.simulation
+                if sim_config.map_file:
+                    world = SimulatedWorld.from_file(Path(sim_config.map_file))
+                else:
+                    world = SimulatedWorld.from_template(sim_config.map_template)
+
+                if sim_config.spawn_x is not None:
+                    world.robot_x = sim_config.spawn_x
+                if sim_config.spawn_y is not None:
+                    world.robot_y = sim_config.spawn_y
+                if sim_config.spawn_theta is not None:
+                    world.robot_theta = sim_config.spawn_theta
+
+                transport = SimNeatoTransport(world)
+                self._node = NeatoNode(
+                    transport=transport,
+                    scan_rate_hz=neato_config.scan_rate_hz,
+                    odom_rate_hz=neato_config.odom_rate_hz,
+                    cmd_rate_hz=neato_config.cmd_rate_hz,
+                )
+            else:
+                self._node = NeatoNode(
+                    port=neato_config.port,
+                    scan_rate_hz=neato_config.scan_rate_hz,
+                    odom_rate_hz=neato_config.odom_rate_hz,
+                    cmd_rate_hz=neato_config.cmd_rate_hz,
+                )
         elif self._sim:
             # Simulation mode - generate sensor data from virtual world
             from nimbus.sim import SimulatedWorld, SimulatorNode
