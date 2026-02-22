@@ -35,6 +35,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+neato = [
+    "pyserial>=3.5",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",

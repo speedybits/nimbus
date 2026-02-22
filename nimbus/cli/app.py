@@ -54,6 +54,8 @@ def run(
     config: Optional[Path] = typer.Option(None, help="Path to config file"),
     mock: bool = typer.Option(False, "--mock", help="Use mock node (no hardware)"),
     sim: bool = typer.Option(False, "--sim", help="Run in simulation mode (virtual world)"),
+    transport: Optional[str] = typer.Option(None, "--transport", help="Transport: xrce (default), neato, sim, mock"),
+    neato_port: Optional[str] = typer.Option(None, "--neato-port", help="Serial port for Neato transport (e.g. /dev/ttyACM0)"),
     map_file: Optional[Path] = typer.Option(None, "--map", help="Path to map file for simulation"),
     map_template: Optional[str] = typer.Option(None, "--map-template", help="Built-in map template: empty_room, simple_maze, four_rooms"),
     spawn: Optional[str] = typer.Option(None, "--spawn", help="Spawn position as x,y,theta (e.g., '0.5,0.5,0')"),
@@ -119,13 +121,32 @@ def run(
             console.print("Expected format: x,y or x,y,theta (e.g., '0.5,0.5,0')")
             raise typer.Exit(1)
 
+    # Resolve --transport shorthand into boolean flags
+    neato = False
+    if transport:
+        transport = transport.lower()
+        if transport == "neato":
+            neato = True
+        elif transport == "sim":
+            sim = True
+        elif transport == "mock":
+            mock = True
+        elif transport == "xrce":
+            pass  # default
+        else:
+            console.print(f"[red]Unknown transport:[/red] {transport}")
+            console.print("Valid options: xrce, neato, sim, mock")
+            raise typer.Exit(1)
+
     # Banner
     console.print(Panel.fit(
         "[bold blue]Nimbus[/bold blue] Robot Controller",
         subtitle="Press Ctrl+C to stop"
     ))
 
-    if sim:
+    if neato:
+        console.print("[green]Mode:[/green] Neato Serial Transport")
+    elif sim:
         console.print("[green]Mode:[/green] Simulation")
         if map_file:
             console.print(f"[green]Map:[/green] {map_file}")
@@ -139,6 +160,8 @@ def run(
 
     # Load config and apply simulation settings
     nimbus_config = NimbusConfig.load(config) if config else NimbusConfig.load()
+    if neato_port:
+        nimbus_config.neato.port = neato_port
     if sim:
         nimbus_config.simulation.enabled = True
         if map_file:
@@ -156,6 +179,7 @@ def run(
         config_path=str(config) if config else None,
         mock=mock,
         sim=sim,
+        neato=neato,
     )
     runner.config = nimbus_config  # Apply updated config
 

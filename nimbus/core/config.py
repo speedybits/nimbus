@@ -87,6 +87,17 @@ class SimulationConfig:
 
 
 @dataclass
+class NeatoConfig:
+    """Neato serial transport configuration."""
+
+    port: str = "/dev/ttyACM0"
+    baudrate: int = 115200
+    scan_rate_hz: float = 5.0    # GetLDSScan rate (~200ms per scan)
+    odom_rate_hz: float = 10.0   # GetMotors rate
+    cmd_rate_hz: float = 10.0    # SetMotor command rate
+
+
+@dataclass
 class NimbusConfig:
     """
     Top-level configuration container.
@@ -101,6 +112,7 @@ class NimbusConfig:
     api: APIConfig = field(default_factory=APIConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     simulation: SimulationConfig = field(default_factory=SimulationConfig)
+    neato: NeatoConfig = field(default_factory=NeatoConfig)
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "NimbusConfig":
@@ -149,6 +161,7 @@ class NimbusConfig:
             ("api", config.api),
             ("agent", config.agent),
             ("simulation", config.simulation),
+            ("neato", config.neato),
         ]
 
         for section_name, section_obj in sections:
@@ -184,6 +197,10 @@ class NimbusConfig:
             # Agent settings (XRCE)
             "NIMBUS_AGENT_IP": ("agent", "agent_ip", str),
             "NIMBUS_AGENT_PORT": ("agent", "agent_port", int),
+
+            # Neato settings
+            "NIMBUS_NEATO_PORT": ("neato", "port", str),
+            "NIMBUS_NEATO_BAUDRATE": ("neato", "baudrate", int),
         }
 
         for env_var, (section, key, converter) in mappings.items():

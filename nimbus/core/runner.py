@@ -59,10 +59,12 @@ class NimbusRunner:
         config: Optional[NimbusConfig] = None,
         mock: bool = False,  # Use mock node for testing
         sim: bool = False,   # Use simulation mode
+        neato: bool = False,  # Use Neato serial transport
     ):
         self.config = config or NimbusConfig.load()
         self._mock = mock
         self._sim = sim
+        self._neato = neato
 
         # Core components
         self._node: Optional[XRCENode] = None
@@ -136,7 +138,16 @@ class NimbusRunner:
             return
 
         # Create node based on mode
-        if self._sim:
+        if self._neato:
+            from nimbus.core.neato import NeatoNode
+            neato_config = self.config.neato
+            self._node = NeatoNode(
+                port=neato_config.port,
+                scan_rate_hz=neato_config.scan_rate_hz,
+                odom_rate_hz=neato_config.odom_rate_hz,
+                cmd_rate_hz=neato_config.cmd_rate_hz,
+            )
+        elif self._sim:
             # Simulation mode - generate sensor data from virtual world
             from nimbus.sim import SimulatedWorld, SimulatorNode
             from pathlib import Path
@@ -482,6 +493,7 @@ def create_runner(
     config_path: Optional[str] = None,
     mock: bool = False,
     sim: bool = False,
+    neato: bool = False,
 ) -> NimbusRunner:
     """
     Factory function to create a configured runner.
@@ -490,6 +502,7 @@ def create_runner(
         config_path: Optional path to config file
         mock: Use mock node for testing
         sim: Use simulation mode
+        neato: Use Neato serial transport
 
     Returns:
         Configured NimbusRunner
@@ -497,4 +510,4 @@ def create_runner(
     from pathlib import Path
 
     config = NimbusConfig.load(Path(config_path) if config_path else None)
-    return NimbusRunner(config=config, mock=mock, sim=sim)
+    return NimbusRunner(config=config, mock=mock, sim=sim, neato=neato)
