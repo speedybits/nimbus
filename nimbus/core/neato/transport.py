@@ -1,7 +1,7 @@
 """
 Neato serial transport protocol.
 
-Implements the Neato XV-series serial protocol for direct MCU communication.
+Implements the Neato D4 serial protocol for direct MCU communication.
 All commands use TestMode. The serial port runs at 115200 baud.
 
 Protocol basics:
@@ -14,7 +14,15 @@ Protocol basics:
 
 from dataclasses import dataclass, field
 from typing import Optional
+import logging
 import time
+
+logger = logging.getLogger(__name__)
+
+
+class SerialDisconnectedError(RuntimeError):
+    """Raised when the serial port is unexpectedly closed."""
+    pass
 
 
 @dataclass
@@ -37,12 +45,54 @@ class NeatoMotorData:
 
 @dataclass
 class NeatoBumperData:
-    """Digital sensor (bumper) state from GetDigitalSensors."""
-    left_bumper: bool = False
-    right_bumper: bool = False
+    """Digital sensor (bumper) state from GetDigitalSensors.
+
+    The Neato D4 reports 4 bumper zones (left/right × side/front)
+    plus 2 wheel-drop switches.
+    """
+    left_side_bumper: bool = False
+    left_front_bumper: bool = False
+    right_side_bumper: bool = False
+    right_front_bumper: bool = False
     left_wheel_drop: bool = False
     right_wheel_drop: bool = False
-    wall_sensor: bool = False
+
+    @property
+    def left_bumper(self) -> bool:
+        return self.left_side_bumper or self.left_front_bumper
+
+    @property
+    def right_bumper(self) -> bool:
+        return self.right_side_bumper or self.right_front_bumper
+
+    @property
+    def any_front_bumper(self) -> bool:
+        return self.left_front_bumper or self.right_front_bumper
+
+    @property
+    def any_bumper(self) -> bool:
+        return (self.left_side_bumper or self.left_front_bumper
+                or self.right_side_bumper or self.right_front_bumper)
+
+
+@dataclass
+class NeatoAnalogData:
+    """Analog sensor data from GetAnalogSensors.
+
+    Drop values indicate distance to ground — large values mean
+    the wheel is over a cliff/stair edge.
+    """
+    left_drop_mm: int = 0
+    right_drop_mm: int = 0
+    wall_sensor_mm: int = 0
+    battery_voltage_mv: int = 0
+
+    # Drop threshold: values above this indicate a cliff (~10mm normal, >50mm = edge)
+    CLIFF_THRESHOLD_MM: int = 50
+
+    @property
+    def cliff_detected(self) -> bool:
+        return self.left_drop_mm > self.CLIFF_THRESHOLD_MM or self.right_drop_mm > self.CLIFF_THRESHOLD_MM
 
 
 @dataclass
@@ -55,7 +105,7 @@ class NeatoBatteryData:
 
 class NeatoTransport:
     """
-    Low-level serial protocol for Neato XV-series vacuum.
+    Low-level serial protocol for Neato D4 vacuum.
 
     NOT thread-safe — caller must hold a lock for all serial access.
 
@@ -127,7 +177,9 @@ class NeatoTransport:
                 angle = int(parts[0].strip())
                 dist = int(parts[1].strip())
                 intensity = int(parts[2].strip())
-                error = int(parts[3].strip())
+                error = int(parts[3].strip(), 16)
+                if error != 0:
+                    logger.debug("LDS scan angle %d error code 0x%X", angle, error)
                 scan.angles.append(angle)
                 scan.distances_mm.append(dist)
                 scan.intensities.append(intensity)
@@ -172,11 +224,23 @@ class NeatoTransport:
         lines = self._send_command("GetDigitalSensors")
         data = self._parse_key_value(lines)
         return NeatoBumperData(
-            left_bumper=data.get("SNSR_LEFT_BUMPER", "0") != "0",
-            right_bumper=data.get("SNSR_RIGHT_BUMPER", "0") != "0",
+            left_side_bumper=data.get("LSIDEBIT", "0") != "0",
+            left_front_bumper=data.get("LFRONTBIT", "0") != "0",
+            right_side_bumper=data.get("RSIDEBIT", "0") != "0",
+            right_front_bumper=data.get("RFRONTBIT", "0") != "0",
             left_wheel_drop=data.get("SNSR_LEFT_WHEEL_EXTENDED", "0") != "0",
             right_wheel_drop=data.get("SNSR_RIGHT_WHEEL_EXTENDED", "0") != "0",
-            wall_sensor=data.get("SNSR_WALL_DETECT", "0") != "0",
+        )
+
+    def get_analog_sensors(self) -> NeatoAnalogData:
+        """Get analog sensor data (cliff/drop, wall proximity)."""
+        lines = self._send_command("GetAnalogSensors")
+        data = self._parse_key_value(lines)
+        return NeatoAnalogData(
+            left_drop_mm=int(data.get("LeftDropInMM", "0")),
+            right_drop_mm=int(data.get("RightDropInMM", "0")),
+            wall_sensor_mm=int(data.get("WallSensorInMM", "0")),
+            battery_voltage_mv=int(data.get("BatteryVoltageInmV", "0")),
         )
 
     def get_charger(self) -> NeatoBatteryData:
@@ -210,6 +274,8 @@ class NeatoTransport:
         while time.time() < deadline:
             raw = self._serial.readline()
             if not raw:
+                if not self._serial.is_open:
+                    raise SerialDisconnectedError("Serial port closed unexpectedly")
                 break
             line = raw.decode("ascii", errors="replace").strip()
             if "\x1a" in line:

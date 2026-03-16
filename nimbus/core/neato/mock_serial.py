@@ -13,6 +13,7 @@ from .transport import (
     NeatoMotorData,
     NeatoBumperData,
     NeatoBatteryData,
+    NeatoAnalogData,
 )
 
 
@@ -35,6 +36,9 @@ class MockNeatoTransport(NeatoTransport):
         # Configurable wall distance for scan simulation
         self._wall_distance_mm = 2000  # 2 meters default
         self._scan_noise = False
+
+        # Bumper state (configurable for tests)
+        self._bumper_data = NeatoBumperData()
 
     @property
     def is_connected(self) -> bool:
@@ -77,8 +81,12 @@ class MockNeatoTransport(NeatoTransport):
         )
 
     def get_digital_sensors(self) -> NeatoBumperData:
-        """Return all-clear bumper state."""
-        return NeatoBumperData()
+        """Return current bumper state (configurable via trigger_bumper)."""
+        return self._bumper_data
+
+    def get_analog_sensors(self) -> NeatoAnalogData:
+        """Return nominal analog sensor data (no cliff, no wall)."""
+        return NeatoAnalogData(left_drop_mm=10, right_drop_mm=10, wall_sensor_mm=80)
 
     def get_charger(self) -> NeatoBatteryData:
         """Return 100% battery."""
@@ -94,3 +102,19 @@ class MockNeatoTransport(NeatoTransport):
         """Reset encoder positions to zero."""
         self._left_position_mm = 0
         self._right_position_mm = 0
+
+    def trigger_bumper(self, zone: str, pressed: bool = True) -> None:
+        """Set a bumper zone state for testing.
+
+        Args:
+            zone: One of 'left_side', 'left_front', 'right_side', 'right_front'
+            pressed: True to trigger, False to clear
+        """
+        field_name = f"{zone}_bumper"
+        if not hasattr(self._bumper_data, field_name):
+            raise ValueError(f"Unknown bumper zone: {zone}")
+        object.__setattr__(self._bumper_data, field_name, pressed)
+
+    def clear_bumpers(self) -> None:
+        """Clear all bumper states."""
+        self._bumper_data = NeatoBumperData()

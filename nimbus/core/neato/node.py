@@ -12,9 +12,12 @@ Follows the SimulatorNode pattern exactly:
 """
 
 from typing import Any, Callable, Optional
+import logging
 import threading
 import time
 import math
+
+logger = logging.getLogger(__name__)
 
 from nimbus.core.node import MockNimbusNode, TopicBuffer, MockPublisher
 from nimbus.core.xrce.messages import (
@@ -22,7 +25,7 @@ from nimbus.core.xrce.messages import (
     Header, Point, Quaternion, Pose, Vector3,
     PoseWithCovariance, TwistWithCovariance,
 )
-from .transport import NeatoTransport
+from .transport import NeatoTransport, SerialDisconnectedError, NeatoBumperData
 from .kinematics import velocity_to_wheel_speeds, wheel_speeds_to_motor_command, update_odometry
 
 
@@ -45,12 +48,14 @@ class NeatoNode:
         scan_rate_hz: float = 5.0,
         odom_rate_hz: float = 10.0,
         cmd_rate_hz: float = 10.0,
+        sensor_rate_hz: float = 2.0,
         name: str = "nimbus_neato",
     ):
         self._transport = transport or NeatoTransport(port)
         self._scan_rate = scan_rate_hz
         self._odom_rate = odom_rate_hz
         self._cmd_rate = cmd_rate_hz
+        self._sensor_rate = sensor_rate_hz
         self._name = name
 
         # Internal mock node for buffer management
@@ -72,11 +77,22 @@ class NeatoNode:
         # Serial access lock (one port, three threads)
         self._serial_lock = threading.Lock()
 
+        # Latest bumper/battery state (read by runner via properties)
+        self._bumper_data = None
+        self._battery_data = None
+        self._bumper_lock = threading.Lock()
+
+        # Serial health tracking
+        self._serial_healthy = True
+        self._consecutive_errors = 0
+        self._max_consecutive_errors = 3
+
         # Thread control
         self._running = False
         self._scan_thread: Optional[threading.Thread] = None
         self._odom_thread: Optional[threading.Thread] = None
         self._velocity_thread: Optional[threading.Thread] = None
+        self._sensor_thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
         """Connect to Neato and start background threads."""
@@ -92,23 +108,26 @@ class NeatoNode:
         self._scan_thread = threading.Thread(target=self._scan_loop, daemon=True)
         self._odom_thread = threading.Thread(target=self._odom_loop, daemon=True)
         self._velocity_thread = threading.Thread(target=self._velocity_loop, daemon=True)
+        self._sensor_thread = threading.Thread(target=self._sensor_loop, daemon=True)
 
         self._scan_thread.start()
         self._odom_thread.start()
         self._velocity_thread.start()
+        self._sensor_thread.start()
 
     def shutdown(self) -> None:
         """Stop motors, join threads, disconnect."""
         self._running = False
 
         # Wait for threads to finish
-        for thread in (self._scan_thread, self._odom_thread, self._velocity_thread):
+        for thread in (self._scan_thread, self._odom_thread, self._velocity_thread, self._sensor_thread):
             if thread:
                 thread.join(timeout=2.0)
 
         self._scan_thread = None
         self._odom_thread = None
         self._velocity_thread = None
+        self._sensor_thread = None
 
         # Clean shutdown: stop motors and disconnect
         with self._serial_lock:
@@ -153,6 +172,45 @@ class NeatoNode:
                 self._cmd_linear = float(msg.linear.x)
                 self._cmd_angular = float(msg.angular.z)
 
+    # --- Serial health ---
+
+    def _record_success(self) -> None:
+        """Reset error counter on successful serial operation."""
+        self._consecutive_errors = 0
+        if not self._serial_healthy:
+            logger.info("Serial connection restored")
+            self._serial_healthy = True
+
+    def _record_error(self, exc: Exception, context: str) -> None:
+        """Track serial errors; mark unhealthy after repeated failures."""
+        self._consecutive_errors += 1
+        if isinstance(exc, SerialDisconnectedError):
+            logger.warning("Serial disconnected during %s: %s", context, exc)
+            self._serial_healthy = False
+        else:
+            logger.warning("Serial error in %s (%d/%d): %s",
+                           context, self._consecutive_errors,
+                           self._max_consecutive_errors, exc)
+            if self._consecutive_errors >= self._max_consecutive_errors:
+                logger.error("Serial marked unhealthy after %d consecutive errors",
+                             self._consecutive_errors)
+                self._serial_healthy = False
+
+    def _reconnect(self) -> bool:
+        """Attempt to reconnect the serial transport. Returns True on success."""
+        try:
+            logger.info("Attempting serial reconnect...")
+            with self._serial_lock:
+                self._transport.disconnect()
+                self._transport.connect()
+            logger.info("Serial reconnect successful")
+            self._serial_healthy = True
+            self._consecutive_errors = 0
+            return True
+        except Exception as e:
+            logger.warning("Serial reconnect failed: %s", e)
+            return False
+
     # --- Background threads ---
 
     def _scan_loop(self) -> None:
@@ -162,9 +220,15 @@ class NeatoNode:
         while self._running:
             loop_start = time.time()
 
+            if not self._serial_healthy:
+                time.sleep(period)
+                continue
+
             try:
                 with self._serial_lock:
                     scan_data = self._transport.get_lds_scan()
+
+                self._record_success()
 
                 # Convert to LaserScan message
                 # Neato returns distances in mm; convert to meters
@@ -194,8 +258,8 @@ class NeatoNode:
 
                 self._mock.inject_message("/scan", scan)
 
-            except Exception:
-                pass  # Serial errors are recoverable; retry next cycle
+            except Exception as e:
+                self._record_error(e, "scan_loop")
 
             elapsed = time.time() - loop_start
             sleep_time = period - elapsed
@@ -208,6 +272,10 @@ class NeatoNode:
 
         while self._running:
             loop_start = time.time()
+
+            if not self._serial_healthy:
+                time.sleep(period)
+                continue
 
             try:
                 with self._serial_lock:
@@ -259,8 +327,10 @@ class NeatoNode:
                 self._last_left_mm = left_mm
                 self._last_right_mm = right_mm
 
-            except Exception:
-                pass
+                self._record_success()
+
+            except Exception as e:
+                self._record_error(e, "odom_loop")
 
             elapsed = time.time() - loop_start
             sleep_time = period - elapsed
@@ -274,6 +344,10 @@ class NeatoNode:
 
         while self._running:
             loop_start = time.time()
+
+            if not self._serial_healthy:
+                time.sleep(period)
+                continue
 
             try:
                 with self._cmd_lock:
@@ -291,13 +365,95 @@ class NeatoNode:
                     with self._serial_lock:
                         self._transport.set_motor(left_mm, right_mm, speed_mms)
 
-            except Exception:
-                pass
+                self._record_success()
+
+            except Exception as e:
+                self._record_error(e, "velocity_loop")
 
             elapsed = time.time() - loop_start
             sleep_time = period - elapsed
             if sleep_time > 0:
                 time.sleep(sleep_time)
+
+    def _sensor_loop(self) -> None:
+        """Read bumpers at sensor_rate_hz, battery every ~5 seconds.
+
+        Also owns reconnection: when serial is unhealthy, attempts
+        reconnect with exponential backoff (0.5s → 10s cap).
+        """
+        period = 1.0 / self._sensor_rate
+        battery_interval = 5.0  # seconds between battery reads
+        last_battery_time = 0.0
+        reconnect_delay = 0.5   # exponential backoff start
+
+        while self._running:
+            loop_start = time.time()
+
+            # Reconnection logic — this thread owns it
+            if not self._serial_healthy:
+                logger.info("Serial unhealthy, waiting %.1fs before reconnect...", reconnect_delay)
+                time.sleep(reconnect_delay)
+                if self._reconnect():
+                    reconnect_delay = 0.5
+                else:
+                    reconnect_delay = min(reconnect_delay * 2, 10.0)
+                continue
+
+            try:
+                with self._serial_lock:
+                    bumper_data = self._transport.get_digital_sensors()
+                    analog_data = self._transport.get_analog_sensors()
+
+                self._record_success()
+
+                # Cliff detection triggers bumper emergency
+                if analog_data.cliff_detected:
+                    logger.warning("Cliff detected! L=%dmm R=%dmm",
+                                   analog_data.left_drop_mm, analog_data.right_drop_mm)
+                    bumper_data = NeatoBumperData(
+                        left_side_bumper=bumper_data.left_side_bumper,
+                        left_front_bumper=bumper_data.left_front_bumper or (analog_data.left_drop_mm > analog_data.CLIFF_THRESHOLD_MM),
+                        right_side_bumper=bumper_data.right_side_bumper,
+                        right_front_bumper=bumper_data.right_front_bumper or (analog_data.right_drop_mm > analog_data.CLIFF_THRESHOLD_MM),
+                        left_wheel_drop=bumper_data.left_wheel_drop,
+                        right_wheel_drop=bumper_data.right_wheel_drop,
+                    )
+
+                with self._bumper_lock:
+                    self._bumper_data = bumper_data
+
+                self._mock.inject_message("/bumpers", bumper_data)
+
+                # Battery on wall-clock interval
+                if time.time() - last_battery_time >= battery_interval:
+                    with self._serial_lock:
+                        battery_data = self._transport.get_charger()
+
+                    with self._bumper_lock:
+                        self._battery_data = battery_data
+
+                    self._mock.inject_message("/battery", battery_data)
+                    last_battery_time = time.time()
+
+            except Exception as e:
+                self._record_error(e, "sensor_loop")
+
+            elapsed = time.time() - loop_start
+            sleep_time = period - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+    @property
+    def bumper_data(self):
+        """Latest bumper reading (thread-safe)."""
+        with self._bumper_lock:
+            return self._bumper_data
+
+    @property
+    def battery_data(self):
+        """Latest battery reading (thread-safe)."""
+        with self._bumper_lock:
+            return self._battery_data
 
     @staticmethod
     def _euler_to_quaternion(roll: float, pitch: float, yaw: float) -> Quaternion:

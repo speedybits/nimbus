@@ -72,17 +72,28 @@ class SafetyController:
         angle = math.atan2(math.sin(angle_rad), math.cos(angle_rad))
         return abs(angle) <= arc_rad
 
-    def evaluate(self, closest_distance: float, obstacle_angle: float = 0.0) -> SafetyLevel:
+    def evaluate(
+        self,
+        closest_distance: float,
+        obstacle_angle: float = 0.0,
+        bumper_triggered: bool = False,
+    ) -> SafetyLevel:
         """
         Evaluate current safety level based on obstacle proximity.
 
         Args:
             closest_distance: Distance to nearest obstacle (meters)
             obstacle_angle: Angle to nearest obstacle (radians, 0 = front)
+            bumper_triggered: True if any physical bumper is pressed
 
         Returns:
             Current SafetyLevel
         """
+        # Physical contact overrides everything
+        if bumper_triggered:
+            self._last_level = SafetyLevel.EMERGENCY
+            return SafetyLevel.EMERGENCY
+
         # Only react to obstacles in the forward arc
         if not self._is_in_forward_arc(obstacle_angle):
             self._last_level = SafetyLevel.NORMAL
@@ -103,7 +114,8 @@ class SafetyController:
         linear: float,
         angular: float,
         closest_distance: float,
-        obstacle_angle: float = 0.0
+        obstacle_angle: float = 0.0,
+        bumper_triggered: bool = False,
     ) -> Tuple[float, float]:
         """
         Apply safety limits to velocity commands.
@@ -116,11 +128,12 @@ class SafetyController:
             angular: Desired angular velocity (rad/s)
             closest_distance: Distance to nearest obstacle (meters)
             obstacle_angle: Angle to nearest obstacle (radians, 0 = front)
+            bumper_triggered: True if any physical bumper is pressed
 
         Returns:
             Tuple of (safe_linear, safe_angular) velocities
         """
-        level = self.evaluate(closest_distance, obstacle_angle)
+        level = self.evaluate(closest_distance, obstacle_angle, bumper_triggered)
 
         if level == SafetyLevel.EMERGENCY:
             # Track emergency state
@@ -128,9 +141,11 @@ class SafetyController:
                 self._emergency_start = time.time()
                 self._consecutive_emergency_count += 1
 
-            # Full stop - no forward motion allowed
-            # Allow rotation to find clear path
-            # Allow slow reverse to back away
+            # Bumper contact = hard stop, no motion at all
+            if bumper_triggered:
+                return (0.0, 0.0)
+
+            # LIDAR emergency: no forward motion, allow rotation and slow reverse
             if linear > 0:
                 linear = 0.0
 

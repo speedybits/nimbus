@@ -21,6 +21,7 @@ from .transport import (
     NeatoMotorData,
     NeatoBumperData,
     NeatoBatteryData,
+    NeatoAnalogData,
 )
 from .kinematics import WHEEL_BASE_M
 
@@ -136,8 +137,12 @@ class SimNeatoTransport(NeatoTransport):
         )
 
     def get_digital_sensors(self) -> NeatoBumperData:
-        """All-clear — no bumpers in simulation."""
+        """All-clear — no bumpers in simulation (yet)."""
         return NeatoBumperData()
+
+    def get_analog_sensors(self) -> NeatoAnalogData:
+        """Flat ground, no cliff — simulation has no drop sensors."""
+        return NeatoAnalogData(left_drop_mm=10, right_drop_mm=10, wall_sensor_mm=80)
 
     def get_charger(self) -> NeatoBatteryData:
         """Infinite battery in simulation."""

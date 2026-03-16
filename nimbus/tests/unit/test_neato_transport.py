@@ -91,6 +91,31 @@ class TestLDSScanParsing:
         assert len(scan.angles) == 2
         assert scan.angles == [0, 1]
 
+    def test_hex_error_codes(self):
+        """Verify error codes are parsed as hex (e.g. 'A' = 10, not ValueError)."""
+        lines = [
+            "0,1234,50,0",
+            "1,0,0,A",        # hex A = 10 decimal
+            "2,500,40,1F",    # hex 1F = 31 decimal
+            "3,2000,60,0",
+        ]
+        from nimbus.core.neato.transport import NeatoScanData
+        scan = NeatoScanData()
+        for line in lines:
+            parts = line.split(",")
+            if len(parts) != 4:
+                continue
+            try:
+                scan.angles.append(int(parts[0].strip()))
+                scan.distances_mm.append(int(parts[1].strip()))
+                scan.intensities.append(int(parts[2].strip()))
+                scan.error_codes.append(int(parts[3].strip(), 16))
+            except ValueError:
+                continue
+
+        assert len(scan.angles) == 4
+        assert scan.error_codes == [0, 10, 31, 0]
+
 
 class TestMotorDataParsing:
     """Test GetMotors response parsing."""
@@ -113,21 +138,38 @@ class TestMotorDataParsing:
 
 
 class TestBumperParsing:
-    """Test GetDigitalSensors response parsing."""
+    """Test GetDigitalSensors response parsing (Neato D4 key names)."""
 
     def test_parse_bumper_response(self):
         lines = [
             "Digital Sensor Name,Value",
-            "SNSR_LEFT_BUMPER,0",
-            "SNSR_RIGHT_BUMPER,1",
             "SNSR_LEFT_WHEEL_EXTENDED,0",
             "SNSR_RIGHT_WHEEL_EXTENDED,0",
-            "SNSR_WALL_DETECT,1",
+            "LSIDEBIT,0",
+            "LFRONTBIT,1",
+            "RSIDEBIT,0",
+            "RFRONTBIT,0",
         ]
         data = NeatoTransport._parse_key_value(lines)
-        assert data["SNSR_LEFT_BUMPER"] == "0"
-        assert data["SNSR_RIGHT_BUMPER"] == "1"
-        assert data["SNSR_WALL_DETECT"] == "1"
+        assert data["LSIDEBIT"] == "0"
+        assert data["LFRONTBIT"] == "1"
+        assert data["RSIDEBIT"] == "0"
+        assert data["RFRONTBIT"] == "0"
+
+    def test_bumper_data_convenience_properties(self):
+        from nimbus.core.neato.transport import NeatoBumperData
+        bumper = NeatoBumperData(left_front_bumper=True)
+        assert bumper.left_bumper is True
+        assert bumper.right_bumper is False
+        assert bumper.any_front_bumper is True
+        assert bumper.any_bumper is True
+
+    def test_bumper_data_all_clear(self):
+        from nimbus.core.neato.transport import NeatoBumperData
+        bumper = NeatoBumperData()
+        assert bumper.any_bumper is False
+        assert bumper.left_bumper is False
+        assert bumper.right_bumper is False
 
 
 class TestBatteryParsing:

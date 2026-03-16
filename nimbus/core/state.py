@@ -74,6 +74,7 @@ class SensorSnapshot:
     lidar_ranges: tuple[float, ...]  # 360 floats, one per degree
     closest_obstacle: float          # meters to nearest obstacle
     obstacle_direction: float        # radians, angle to nearest obstacle
+    bumper_triggered: bool = False   # True if any bumper is pressed
 
     @classmethod
     def empty(cls) -> "SensorSnapshot":
@@ -84,7 +85,8 @@ class SensorSnapshot:
             velocity=Velocity(),
             lidar_ranges=tuple([float('inf')] * 360),
             closest_obstacle=float('inf'),
-            obstacle_direction=0.0
+            obstacle_direction=0.0,
+            bumper_triggered=False,
         )
 
 

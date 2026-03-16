@@ -113,7 +113,8 @@ class SensorFusion:
         velocity: Velocity,
         lidar_ranges: tuple[float, ...],
         closest_obstacle: float,
-        obstacle_direction: float
+        obstacle_direction: float,
+        bumper_triggered: bool = False,
     ) -> SensorSnapshot:
         """
         Create a new sensor snapshot from all sensor data.
@@ -124,6 +125,7 @@ class SensorFusion:
             lidar_ranges: 360 LIDAR range values
             closest_obstacle: Distance to nearest obstacle
             obstacle_direction: Angle to nearest obstacle
+            bumper_triggered: True if any physical bumper is pressed
 
         Returns:
             Immutable SensorSnapshot
@@ -134,7 +136,8 @@ class SensorFusion:
             velocity=velocity,
             lidar_ranges=lidar_ranges,
             closest_obstacle=closest_obstacle,
-            obstacle_direction=obstacle_direction
+            obstacle_direction=obstacle_direction,
+            bumper_triggered=bumper_triggered,
         )
         self._last_snapshot = snapshot
         return snapshot

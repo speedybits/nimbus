@@ -330,6 +330,24 @@ class LiveDashboard:
         else:
             table.add_row("Safety:", Text("OK", style="green"))
 
+        # Battery
+        battery = self.runner.battery_status
+        if battery and hasattr(battery, "battery_percent"):
+            pct = battery.battery_percent
+            if pct > 50:
+                batt_style = "green"
+            elif pct > 20:
+                batt_style = "yellow"
+            else:
+                batt_style = "bold red"
+            charging = " (charging)" if battery.charging else ""
+            table.add_row("Battery:", Text(f"{pct}%{charging}", style=batt_style))
+
+        # Bumpers
+        sensors = context.sensors
+        if sensors and sensors.bumper_triggered:
+            table.add_row("Bumpers:", Text("CONTACT", style="bold red"))
+
         # Show wander speed settings
         wander = self.runner._behavior_manager.get_behavior("wander")
         if wander and hasattr(wander, 'forward_speed'):

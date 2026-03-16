@@ -84,6 +84,8 @@ class NimbusRunner:
         # Topic buffers (set during start)
         self._scan_buffer = None
         self._odom_buffer = None
+        self._bumper_buffer = None
+        self._battery_buffer = None
         self._cmd_publisher = None
 
         # Control
@@ -224,6 +226,11 @@ class NimbusRunner:
             buffer_size=1
         )
 
+        # Bumper and battery data from Neato sensor loop
+        from nimbus.core.neato.transport import NeatoBumperData, NeatoBatteryData
+        self._bumper_buffer = self._node.subscribe("/bumpers", NeatoBumperData, buffer_size=1)
+        self._battery_buffer = self._node.subscribe("/battery", NeatoBatteryData, buffer_size=1)
+
         self._cmd_publisher = self._node.publisher("/cmd_vel", Twist)
 
         self._running = True
@@ -285,11 +292,14 @@ class NimbusRunner:
             # Motor test mode - skip safety filtering entirely
             smooth_linear, smooth_angular = self._smoother.smooth(velocity.linear, velocity.angular)
         else:
-            # Apply safety filtering (only for obstacles in forward arc)
-            closest = self._context.sensors.closest_obstacle if self._context.sensors else float('inf')
-            obstacle_angle = self._context.sensors.obstacle_direction if self._context.sensors else 0.0
+            # Apply safety filtering (LIDAR + bumpers)
+            sensors = self._context.sensors
+            closest = sensors.closest_obstacle if sensors else float('inf')
+            obstacle_angle = sensors.obstacle_direction if sensors else 0.0
+            bumper = sensors.bumper_triggered if sensors else False
             safe_linear, safe_angular = self._safety.limit_velocity(
-                velocity.linear, velocity.angular, closest, obstacle_angle
+                velocity.linear, velocity.angular, closest, obstacle_angle,
+                bumper_triggered=bumper,
             )
 
             # Smooth velocity
@@ -314,6 +324,7 @@ class NimbusRunner:
         lidar_ranges = tuple([float('inf')] * 360)
         closest = float('inf')
         closest_angle = 0.0
+        bumper_triggered = False
 
         # Process odometry
         if self._odom_buffer:
@@ -329,13 +340,20 @@ class NimbusRunner:
                 lidar_ranges = tuple(ranges.tolist())
                 closest, closest_angle = self._lidar_processor.find_closest(ranges)
 
+        # Process bumpers
+        if self._bumper_buffer:
+            bumper_msg = self._bumper_buffer.latest()
+            if bumper_msg and hasattr(bumper_msg, "any_bumper"):
+                bumper_triggered = bumper_msg.any_bumper
+
         # Create snapshot
         snapshot = self._fusion.update(
             pose=pose,
             velocity=velocity,
             lidar_ranges=lidar_ranges,
             closest_obstacle=closest,
-            obstacle_direction=closest_angle
+            obstacle_direction=closest_angle,
+            bumper_triggered=bumper_triggered,
         )
 
         self._context.update_sensors(snapshot)
@@ -510,6 +528,13 @@ class NimbusRunner:
     def safety_status(self) -> dict:
         """Get current safety status."""
         return self._safety.status
+
+    @property
+    def battery_status(self):
+        """Get latest battery data, or None if unavailable."""
+        if self._battery_buffer:
+            return self._battery_buffer.latest()
+        return None
 
     @property
     def obstacle_map(self) -> ObstacleMap:
