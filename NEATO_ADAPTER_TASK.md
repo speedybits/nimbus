@@ -18,10 +18,10 @@ The goal is to bypass the existing XRCE-DDS/ESP32 transport layer and instead ta
 │                 │                       │
 │  ┌──────────────▼──────────────────┐    │
 │  │    NeatoTransport (NEW)         │    │
-│  │  pyserial → /dev/ttyTHS1        │    │
+│  │  pyserial → /dev/ttyACM0        │    │
 │  └──────────────┬──────────────────┘    │
 └─────────────────┼───────────────────────┘
-                  │ UART 115200 baud (3.3V)
+                  │ USB CDC ACM 115200 baud
 ┌─────────────────▼───────────────────────┐
 │           Neato MCU                     │
 │   LIDAR │ Motors │ Sensors │ Battery   │
@@ -246,7 +246,7 @@ class NeatoTransport:
     
     def __init__(
         self,
-        port: str = "/dev/ttyTHS1",  # Jetson UART
+        port: str = "/dev/ttyACM0",  # Jetson USB CDC ACM
         baudrate: int = 115200,
         scan_callback: Optional[Callable[[LidarScan], None]] = None,
         odom_callback: Optional[Callable[[Odometry], None]] = None,
@@ -459,7 +459,7 @@ class NeatoAdapter:
     Replaces the XRCE agent for Neato deployments.
     """
     
-    def __init__(self, port: str = "/dev/ttyTHS1"):
+    def __init__(self, port: str = "/dev/ttyACM0"):
         self.transport = NeatoTransport(
             port=port,
             scan_callback=self._on_scan,
@@ -505,7 +505,7 @@ Add Neato-specific config to `nimbus/core/config.py`:
 transport:
   type: "neato"  # or "xrce" for ESP32
   neato:
-    port: "/dev/ttyTHS1"
+    port: "/dev/ttyACM0"
     baudrate: 115200
     wheel_base_mm: 248
     max_speed_mms: 300
@@ -517,8 +517,8 @@ transport:
 Update `nimbus/cli/` to support selecting transport:
 
 ```bash
-nimbus run --transport neato --port /dev/ttyTHS1
-nimbus run --transport neato --discover  # Try common ports
+nimbus run --transport neato --port /dev/ttyACM0
+nimbus run --transport neato --discover  # Try /dev/ttyACM0, /dev/ttyACM1
 ```
 
 ## Testing
@@ -540,10 +540,10 @@ class MockNeatoSerial:
 ```
 
 ### Hardware Testing Checklist
-1. [ ] Serial connection opens successfully
-2. [ ] TestMode On/Off works
-3. [ ] GetLDSScan returns valid data
-4. [ ] LDS rotation enables/disables
+1. [x] Serial connection opens successfully
+2. [x] TestMode On/Off works
+3. [x] GetLDSScan returns valid data (361/360 valid points confirmed)
+4. [x] LDS rotation enables/disables
 5. [ ] SetMotor moves wheels
 6. [ ] Odometry accumulates correctly
 7. [ ] Bumper sensors report correctly
@@ -560,20 +560,22 @@ class MockNeatoSerial:
 ## Hardware Notes
 
 ### Jetson Nano 2GB
-- UART on `/dev/ttyTHS1` (pins 8/10 on 40-pin header)
-- 3.3V logic levels (compatible with Neato)
+- Connects to Neato via USB-A port → micro USB cable → `/dev/ttyACM0` (CDC ACM, no driver needed)
+- One USB-A port is occupied by the WiFi adapter, leaving one for the Neato
 - Needs USB WiFi dongle (no built-in WiFi)
-- Power: 5V @ 2-3A via barrel jack or GPIO header
+- Power: 5V @ 2-3A via barrel jack, or 5V via GPIO header pins 2/4 + GND pin 6 from buck converter
 
 ### Neato Power
-- Battery: 14.4V NiMH or Li-ion (model dependent)
-- Use buck converter (e.g., 5V/5A step-down) to power Jetson
-- Can tap 16V rail on Neato motherboard
+- Battery: 14.4V Li-ion smart pack (D4 uses part 205-0011, confirmed via GetVersion)
+- Use buck converter (e.g., Pololu D24V50F5, rated to 36V input) to power Jetson from battery rail
+- Tap the 2-wire battery connector on the motherboard (red = +, black = GND)
+- Verify 5V output with multimeter before connecting Jetson
 
 ### Serial Connection
-- Neato debug port: 3.3V UART, 115200 baud
-- Connect: Jetson TX → Neato RX, Jetson RX → Neato TX, GND ↔ GND
-- No level shifter needed (both 3.3V)
+- Neato debug port: micro USB, located behind the dustbin
+- Enumerates as CDC ACM on Linux — no driver needed, appears as `/dev/ttyACM0`
+- Connect with a standard micro USB to USB-A cable
+- Add user to `dialout` group for access without sudo: `sudo usermod -aG dialout $USER`
 
 ## Success Criteria
 
