@@ -144,6 +144,9 @@ class NeatoTransport:
         self._send_command("TestMode On")
         self._send_command("SetLDSRotation On")
 
+        # Wait for LIDAR motor to reach stable rotation speed (~3-5s)
+        time.sleep(4)
+
     def disconnect(self) -> None:
         """Stop motors, LDS, exit TestMode, close port."""
         if not self.is_connected:
@@ -257,7 +260,9 @@ class NeatoTransport:
         """
         Send a command and read the response.
 
-        Writes cmd + newline, reads lines until ctrl-z (0x1A) or timeout.
+        Writes cmd + newline, reads until ctrl-z (0x1A) terminator or timeout.
+        Uses bulk read for speed — reads all available bytes each iteration
+        instead of one line at a time.
 
         Returns:
             List of response lines (stripped, non-empty)
@@ -268,25 +273,37 @@ class NeatoTransport:
         self._serial.write(f"{cmd}\n".encode("ascii"))
         self._serial.flush()
 
-        lines = []
+        buf = bytearray()
         deadline = time.time() + self._timeout
 
         while time.time() < deadline:
-            raw = self._serial.readline()
-            if not raw:
-                if not self._serial.is_open:
-                    raise SerialDisconnectedError("Serial port closed unexpectedly")
-                break
-            line = raw.decode("ascii", errors="replace").strip()
-            if "\x1a" in line:
-                # ctrl-z marks end of response
-                clean = line.replace("\x1a", "").strip()
-                if clean:
-                    lines.append(clean)
-                break
-            if line:
-                lines.append(line)
+            # Read all available bytes at once
+            waiting = self._serial.in_waiting
+            if waiting > 0:
+                chunk = self._serial.read(waiting)
+                if not chunk:
+                    if not self._serial.is_open:
+                        raise SerialDisconnectedError("Serial port closed unexpectedly")
+                    break
+                buf.extend(chunk)
+                # Check for ctrl-z terminator
+                if b"\x1a" in buf:
+                    break
+            else:
+                # Brief sleep to avoid busy-waiting, then try readline as fallback
+                raw = self._serial.readline()
+                if not raw:
+                    if not self._serial.is_open:
+                        raise SerialDisconnectedError("Serial port closed unexpectedly")
+                    break
+                buf.extend(raw)
+                if b"\x1a" in buf:
+                    break
 
+        # Parse into lines
+        text = buf.decode("ascii", errors="replace")
+        text = text.split("\x1a")[0]  # Trim at terminator
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
         return lines
 
     @staticmethod

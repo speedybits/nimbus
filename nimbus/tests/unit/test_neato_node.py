@@ -13,7 +13,7 @@ class TestNeatoNodeLifecycle:
 
     def test_start_and_shutdown(self):
         mock = MockNeatoTransport()
-        node = NeatoNode(transport=mock, scan_rate_hz=20.0, odom_rate_hz=20.0, cmd_rate_hz=20.0)
+        node = NeatoNode(transport=mock)
 
         node.start()
         assert node.is_running
@@ -55,13 +55,13 @@ class TestNeatoNodeScan:
         mock = MockNeatoTransport()
         mock.set_wall_distance(1500)  # 1.5m
 
-        node = NeatoNode(transport=mock, scan_rate_hz=50.0, odom_rate_hz=50.0, cmd_rate_hz=50.0)
+        node = NeatoNode(transport=mock)
         node.start()
 
         scan_buf = node.subscribe("/scan", LaserScan, buffer_size=1)
 
-        # Wait for at least one scan
-        time.sleep(0.15)
+        # Wait for the single serial loop to produce a scan (~0.3s for first scan)
+        time.sleep(0.5)
 
         scan = scan_buf.latest()
         assert scan is not None
@@ -76,12 +76,12 @@ class TestNeatoNodeScan:
     def test_scan_error_handling(self):
         """Error codes in scan data should produce inf ranges."""
         mock = MockNeatoTransport()
-        node = NeatoNode(transport=mock, scan_rate_hz=50.0, odom_rate_hz=50.0, cmd_rate_hz=50.0)
+        node = NeatoNode(transport=mock)
         node.start()
 
         # No error codes from mock, so all ranges should be valid
         scan_buf = node.subscribe("/scan", LaserScan, buffer_size=1)
-        time.sleep(0.15)
+        time.sleep(0.5)
 
         scan = scan_buf.latest()
         assert scan is not None
@@ -95,13 +95,13 @@ class TestNeatoNodeOdometry:
 
     def test_generates_odometry(self):
         mock = MockNeatoTransport()
-        node = NeatoNode(transport=mock, scan_rate_hz=50.0, odom_rate_hz=50.0, cmd_rate_hz=50.0)
+        node = NeatoNode(transport=mock)
         node.start()
 
         odom_buf = node.subscribe("/odom_raw", Odometry, buffer_size=1)
 
         # Wait for baseline + at least one odom update
-        time.sleep(0.15)
+        time.sleep(0.5)
 
         odom = odom_buf.latest()
         # May or may not have odom yet (need 2 readings for delta)
@@ -119,7 +119,7 @@ class TestNeatoNodeVelocity:
 
     def test_velocity_command_forwarded(self):
         mock = MockNeatoTransport()
-        node = NeatoNode(transport=mock, scan_rate_hz=50.0, odom_rate_hz=50.0, cmd_rate_hz=50.0)
+        node = NeatoNode(transport=mock)
         node.start()
 
         node.subscribe("/scan", LaserScan)
@@ -129,8 +129,8 @@ class TestNeatoNodeVelocity:
         # Send a forward velocity command
         cmd_pub.publish(Twist.create(linear_x=0.1, angular_z=0.0))
 
-        # Let the velocity loop execute a few times
-        time.sleep(0.15)
+        # Let the serial loop execute a few times
+        time.sleep(0.5)
 
         # The mock transport should have accumulated encoder positions
         # (from set_motor calls in the velocity loop)
@@ -143,7 +143,7 @@ class TestNeatoNodeVelocity:
 
     def test_zero_velocity_stops_motors(self):
         mock = MockNeatoTransport()
-        node = NeatoNode(transport=mock, scan_rate_hz=50.0, odom_rate_hz=50.0, cmd_rate_hz=50.0)
+        node = NeatoNode(transport=mock)
         node.start()
 
         cmd_pub = node.publisher("/cmd_vel", Twist)
@@ -153,7 +153,7 @@ class TestNeatoNodeVelocity:
         # Send zero velocity
         cmd_pub.publish(Twist.create(linear_x=0.0, angular_z=0.0))
 
-        time.sleep(0.1)
+        time.sleep(0.3)
 
         # Encoder should not have accumulated
         motors = mock.get_motors()

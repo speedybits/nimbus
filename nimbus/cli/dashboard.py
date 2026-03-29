@@ -424,7 +424,7 @@ class LiveDashboard:
             if distance < max_display_range and distance > 0.05:
                 # Convert polar to cartesian (index -> actual angle)
                 actual_angle_deg = i * degrees_per_reading
-                angle_rad = math.radians(actual_angle_deg - 90)  # 0 deg = forward = up
+                angle_rad = math.radians(actual_angle_deg - 90)  # 0 deg = backward, 180 = forward = up
                 r = distance * scale
 
                 x = int(center_x + r * math.cos(angle_rad) * 2)  # *2 for aspect ratio

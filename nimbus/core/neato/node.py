@@ -4,11 +4,12 @@ Neato node for Nimbus.
 Provides the same interface as XRCENode and SimulatorNode but
 reads sensors and sends motor commands over serial to a Neato vacuum.
 
-Follows the SimulatorNode pattern exactly:
-- Wraps MockNimbusNode for buffer/publisher infrastructure
-- Intercepts /cmd_vel via NeatoPublisher
-- Background daemon threads for scan, odometry, and velocity
-- Injects LaserScan and Odometry messages into topic buffers
+Uses a single serial loop to avoid contention — one thread owns the
+serial port and round-robins through operations each tick:
+  1. Motor command (every tick — smooth motion)
+  2. Odometry read (every tick — accurate tracking)
+  3. LIDAR scan (every N ticks — ~2-3 Hz effective)
+  4. Bumpers/battery (every M ticks — ~1 Hz)
 """
 
 from typing import Any, Callable, Optional
@@ -33,12 +34,12 @@ class NeatoNode:
     """
     Neato serial node — same interface as XRCENode / SimulatorNode.
 
-    Three background threads handle all serial I/O:
-    1. _scan_loop (~5Hz)   — GetLDSScan → LaserScan messages
-    2. _odom_loop (~10Hz)  — GetMotors → encoder deltas → Odometry messages
-    3. _velocity_loop (~10Hz) — read cmd_vel → SetMotor commands
-
-    All serial access is guarded by _serial_lock.
+    A single background thread owns all serial I/O, eliminating lock
+    contention. Each loop iteration (~10 Hz target):
+      - Always: send motor command + read odometry
+      - Every 3rd tick: read LIDAR scan
+      - Every 10th tick: read bumpers/sensors
+      - Every 50th tick: read battery
     """
 
     def __init__(
@@ -52,16 +53,12 @@ class NeatoNode:
         name: str = "nimbus_neato",
     ):
         self._transport = transport or NeatoTransport(port)
-        self._scan_rate = scan_rate_hz
-        self._odom_rate = odom_rate_hz
-        self._cmd_rate = cmd_rate_hz
-        self._sensor_rate = sensor_rate_hz
         self._name = name
 
         # Internal mock node for buffer management
         self._mock = MockNimbusNode(name)
 
-        # Velocity command state
+        # Velocity command state (written by behavior thread, read by serial loop)
         self._cmd_linear = 0.0
         self._cmd_angular = 0.0
         self._cmd_lock = threading.Lock()
@@ -71,13 +68,10 @@ class NeatoNode:
         self._odom_y = 0.0
         self._odom_theta = 0.0
         self._odom_lock = threading.Lock()
-        self._last_left_mm = None  # Previous encoder reading (None until first read)
+        self._last_left_mm = None
         self._last_right_mm = None
 
-        # Serial access lock (one port, three threads)
-        self._serial_lock = threading.Lock()
-
-        # Latest bumper/battery state (read by runner via properties)
+        # Latest bumper/battery state
         self._bumper_data = None
         self._battery_data = None
         self._bumper_lock = threading.Lock()
@@ -85,54 +79,36 @@ class NeatoNode:
         # Serial health tracking
         self._serial_healthy = True
         self._consecutive_errors = 0
-        self._max_consecutive_errors = 3
+        self._max_consecutive_errors = 6
+
+        # Motor state tracking (avoid re-sending stop every tick)
+        self._motors_stopped = True
 
         # Thread control
         self._running = False
-        self._scan_thread: Optional[threading.Thread] = None
-        self._odom_thread: Optional[threading.Thread] = None
-        self._velocity_thread: Optional[threading.Thread] = None
-        self._sensor_thread: Optional[threading.Thread] = None
+        self._loop_thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
-        """Connect to Neato and start background threads."""
+        """Connect to Neato and start the serial loop."""
         if self._running:
             return
 
-        with self._serial_lock:
-            self._transport.connect()
-
+        self._transport.connect()
         self._mock.start()
         self._running = True
 
-        self._scan_thread = threading.Thread(target=self._scan_loop, daemon=True)
-        self._odom_thread = threading.Thread(target=self._odom_loop, daemon=True)
-        self._velocity_thread = threading.Thread(target=self._velocity_loop, daemon=True)
-        self._sensor_thread = threading.Thread(target=self._sensor_loop, daemon=True)
-
-        self._scan_thread.start()
-        self._odom_thread.start()
-        self._velocity_thread.start()
-        self._sensor_thread.start()
+        self._loop_thread = threading.Thread(target=self._serial_loop, daemon=True)
+        self._loop_thread.start()
 
     def shutdown(self) -> None:
-        """Stop motors, join threads, disconnect."""
+        """Stop motors, join thread, disconnect."""
         self._running = False
 
-        # Wait for threads to finish
-        for thread in (self._scan_thread, self._odom_thread, self._velocity_thread, self._sensor_thread):
-            if thread:
-                thread.join(timeout=2.0)
+        if self._loop_thread:
+            self._loop_thread.join(timeout=3.0)
+        self._loop_thread = None
 
-        self._scan_thread = None
-        self._odom_thread = None
-        self._velocity_thread = None
-        self._sensor_thread = None
-
-        # Clean shutdown: stop motors and disconnect
-        with self._serial_lock:
-            self._transport.disconnect()
-
+        self._transport.disconnect()
         self._mock.shutdown()
 
     def subscribe(
@@ -200,9 +176,8 @@ class NeatoNode:
         """Attempt to reconnect the serial transport. Returns True on success."""
         try:
             logger.info("Attempting serial reconnect...")
-            with self._serial_lock:
-                self._transport.disconnect()
-                self._transport.connect()
+            self._transport.disconnect()
+            self._transport.connect()
             logger.info("Serial reconnect successful")
             self._serial_healthy = True
             self._consecutive_errors = 0
@@ -211,237 +186,202 @@ class NeatoNode:
             logger.warning("Serial reconnect failed: %s", e)
             return False
 
-    # --- Background threads ---
+    # --- Single serial loop ---
 
-    def _scan_loop(self) -> None:
-        """Read LIDAR at scan_rate_hz and inject LaserScan messages."""
-        period = 1.0 / self._scan_rate
+    def _serial_loop(self) -> None:
+        """Single thread that owns all serial I/O.
 
-        while self._running:
-            loop_start = time.time()
-
-            if not self._serial_healthy:
-                time.sleep(period)
-                continue
-
-            try:
-                with self._serial_lock:
-                    scan_data = self._transport.get_lds_scan()
-
-                self._record_success()
-
-                # Convert to LaserScan message
-                # Neato returns distances in mm; convert to meters
-                # Error code != 0 means invalid reading -> inf
-                ranges = []
-                for i in range(360):
-                    if i < len(scan_data.distances_mm):
-                        if scan_data.error_codes[i] != 0 or scan_data.distances_mm[i] == 0:
-                            ranges.append(float("inf"))
-                        else:
-                            ranges.append(scan_data.distances_mm[i] / 1000.0)
-                    else:
-                        ranges.append(float("inf"))
-
-                scan = LaserScan(
-                    header=Header(frame_id="laser"),
-                    angle_min=0.0,
-                    angle_max=2 * math.pi,
-                    angle_increment=2 * math.pi / 360,
-                    time_increment=0.0,
-                    scan_time=1.0 / self._scan_rate,
-                    range_min=0.02,
-                    range_max=5.0,
-                    ranges=ranges,
-                    intensities=[float(i) for i in scan_data.intensities] if scan_data.intensities else [],
-                )
-
-                self._mock.inject_message("/scan", scan)
-
-            except Exception as e:
-                self._record_error(e, "scan_loop")
-
-            elapsed = time.time() - loop_start
-            sleep_time = period - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-
-    def _odom_loop(self) -> None:
-        """Read wheel encoders at odom_rate_hz and inject Odometry messages."""
-        period = 1.0 / self._odom_rate
-
-        while self._running:
-            loop_start = time.time()
-
-            if not self._serial_healthy:
-                time.sleep(period)
-                continue
-
-            try:
-                with self._serial_lock:
-                    motor_data = self._transport.get_motors()
-
-                left_mm = motor_data.left_wheel_position_mm
-                right_mm = motor_data.right_wheel_position_mm
-
-                # Compute deltas (skip first reading to establish baseline)
-                if self._last_left_mm is not None:
-                    delta_left_m = (left_mm - self._last_left_mm) / 1000.0
-                    delta_right_m = (right_mm - self._last_right_mm) / 1000.0
-
-                    with self._odom_lock:
-                        self._odom_x, self._odom_y, self._odom_theta = update_odometry(
-                            self._odom_x, self._odom_y, self._odom_theta,
-                            delta_left_m, delta_right_m,
-                        )
-                        x, y, theta = self._odom_x, self._odom_y, self._odom_theta
-
-                    # Read current velocity for twist
-                    with self._cmd_lock:
-                        linear = self._cmd_linear
-                        angular = self._cmd_angular
-
-                    quat = self._euler_to_quaternion(0, 0, theta)
-
-                    odom = Odometry(
-                        header=Header(frame_id="odom"),
-                        child_frame_id="base_link",
-                        pose=PoseWithCovariance(
-                            pose=Pose(
-                                position=Point(x=x, y=y, z=0.0),
-                                orientation=quat,
-                            ),
-                            covariance=[0.0] * 36,
-                        ),
-                        twist=TwistWithCovariance(
-                            twist=Twist(
-                                linear=Vector3(x=linear, y=0.0, z=0.0),
-                                angular=Vector3(x=0.0, y=0.0, z=angular),
-                            ),
-                            covariance=[0.0] * 36,
-                        ),
-                    )
-
-                    self._mock.inject_message("/odom_raw", odom)
-
-                self._last_left_mm = left_mm
-                self._last_right_mm = right_mm
-
-                self._record_success()
-
-            except Exception as e:
-                self._record_error(e, "odom_loop")
-
-            elapsed = time.time() - loop_start
-            sleep_time = period - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-
-    def _velocity_loop(self) -> None:
-        """Send motor commands at cmd_rate_hz."""
-        period = 1.0 / self._cmd_rate
-        cmd_duration = period  # Each command covers one period
-
-        while self._running:
-            loop_start = time.time()
-
-            if not self._serial_healthy:
-                time.sleep(period)
-                continue
-
-            try:
-                with self._cmd_lock:
-                    linear = self._cmd_linear
-                    angular = self._cmd_angular
-
-                if linear == 0.0 and angular == 0.0:
-                    with self._serial_lock:
-                        self._transport.stop_motors()
-                else:
-                    left_mps, right_mps = velocity_to_wheel_speeds(linear, angular)
-                    left_mm, right_mm, speed_mms = wheel_speeds_to_motor_command(
-                        left_mps, right_mps, cmd_duration,
-                    )
-                    with self._serial_lock:
-                        self._transport.set_motor(left_mm, right_mm, speed_mms)
-
-                self._record_success()
-
-            except Exception as e:
-                self._record_error(e, "velocity_loop")
-
-            elapsed = time.time() - loop_start
-            sleep_time = period - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-
-    def _sensor_loop(self) -> None:
-        """Read bumpers at sensor_rate_hz, battery every ~5 seconds.
-
-        Also owns reconnection: when serial is unhealthy, attempts
-        reconnect with exponential backoff (0.5s → 10s cap).
+        Runs at ~10 Hz base rate. Each tick:
+          - Always: motor command + odometry (fast, essential for smooth motion)
+          - Every 3rd tick: LIDAR scan (~3 Hz)
+          - Every 10th tick: bumpers/cliff (~1 Hz)
+          - Every 50th tick: battery (~0.2 Hz)
         """
-        period = 1.0 / self._sensor_rate
-        battery_interval = 5.0  # seconds between battery reads
-        last_battery_time = 0.0
-        reconnect_delay = 0.5   # exponential backoff start
+        tick = 0
+        base_period = 0.1  # 10 Hz
+        reconnect_delay = 0.5
+        cmd_duration = 1.0  # Motor command covers 1s — always in-flight for smooth motion
 
         while self._running:
             loop_start = time.time()
 
-            # Reconnection logic — this thread owns it
+            # Reconnection when unhealthy
             if not self._serial_healthy:
-                logger.info("Serial unhealthy, waiting %.1fs before reconnect...", reconnect_delay)
+                logger.info("Serial unhealthy, waiting %.1fs before reconnect...",
+                            reconnect_delay)
                 time.sleep(reconnect_delay)
                 if self._reconnect():
                     reconnect_delay = 0.5
+                    tick = 0
                 else:
                     reconnect_delay = min(reconnect_delay * 2, 10.0)
                 continue
 
             try:
-                with self._serial_lock:
-                    bumper_data = self._transport.get_digital_sensors()
-                    analog_data = self._transport.get_analog_sensors()
+                # Priority: scan and motor alternate for safety + smooth motion.
+                # Each serial command takes ~150-200ms, so actual loop rate
+                # is ~3-5 Hz depending on which commands run each tick.
+                #
+                # Tick pattern (repeats every 4):
+                #   0: motor + scan    (safety-critical pair)
+                #   1: motor + odom
+                #   2: motor + scan
+                #   3: motor + odom (+ sensors every 4th cycle)
+
+                self._do_motor_command(cmd_duration)
+
+                if tick % 2 == 0:
+                    self._do_scan()
+                else:
+                    self._do_odometry()
+
+                # Bumpers/cliff every 8th tick
+                if tick % 8 == 3:
+                    self._do_sensors()
+
+                # Battery every 40th tick
+                if tick % 40 == 19:
+                    self._do_battery()
 
                 self._record_success()
 
-                # Cliff detection triggers bumper emergency
-                if analog_data.cliff_detected:
-                    logger.warning("Cliff detected! L=%dmm R=%dmm",
-                                   analog_data.left_drop_mm, analog_data.right_drop_mm)
-                    bumper_data = NeatoBumperData(
-                        left_side_bumper=bumper_data.left_side_bumper,
-                        left_front_bumper=bumper_data.left_front_bumper or (analog_data.left_drop_mm > analog_data.CLIFF_THRESHOLD_MM),
-                        right_side_bumper=bumper_data.right_side_bumper,
-                        right_front_bumper=bumper_data.right_front_bumper or (analog_data.right_drop_mm > analog_data.CLIFF_THRESHOLD_MM),
-                        left_wheel_drop=bumper_data.left_wheel_drop,
-                        right_wheel_drop=bumper_data.right_wheel_drop,
-                    )
-
-                with self._bumper_lock:
-                    self._bumper_data = bumper_data
-
-                self._mock.inject_message("/bumpers", bumper_data)
-
-                # Battery on wall-clock interval
-                if time.time() - last_battery_time >= battery_interval:
-                    with self._serial_lock:
-                        battery_data = self._transport.get_charger()
-
-                    with self._bumper_lock:
-                        self._battery_data = battery_data
-
-                    self._mock.inject_message("/battery", battery_data)
-                    last_battery_time = time.time()
-
             except Exception as e:
-                self._record_error(e, "sensor_loop")
+                self._record_error(e, "serial_loop")
 
+            tick += 1
             elapsed = time.time() - loop_start
-            sleep_time = period - elapsed
+            sleep_time = base_period - elapsed
             if sleep_time > 0:
                 time.sleep(sleep_time)
+
+    def _do_motor_command(self, cmd_duration: float) -> None:
+        """Send current velocity as a motor command."""
+        with self._cmd_lock:
+            linear = self._cmd_linear
+            angular = self._cmd_angular
+
+        if linear == 0.0 and angular == 0.0:
+            if not self._motors_stopped:
+                self._transport.stop_motors()
+                self._motors_stopped = True
+        else:
+            left_mps, right_mps = velocity_to_wheel_speeds(linear, angular)
+            left_mm, right_mm, speed_mms = wheel_speeds_to_motor_command(
+                left_mps, right_mps, cmd_duration,
+            )
+            self._transport.set_motor(left_mm, right_mm, speed_mms)
+            self._motors_stopped = False
+
+    def _do_odometry(self) -> None:
+        """Read encoders and update odometry."""
+        motor_data = self._transport.get_motors()
+
+        left_mm = motor_data.left_wheel_position_mm
+        right_mm = motor_data.right_wheel_position_mm
+
+        if self._last_left_mm is not None:
+            delta_left_m = (left_mm - self._last_left_mm) / 1000.0
+            delta_right_m = (right_mm - self._last_right_mm) / 1000.0
+
+            with self._odom_lock:
+                self._odom_x, self._odom_y, self._odom_theta = update_odometry(
+                    self._odom_x, self._odom_y, self._odom_theta,
+                    delta_left_m, delta_right_m,
+                )
+                x, y, theta = self._odom_x, self._odom_y, self._odom_theta
+
+            with self._cmd_lock:
+                linear = self._cmd_linear
+                angular = self._cmd_angular
+
+            quat = self._euler_to_quaternion(0, 0, theta)
+
+            odom = Odometry(
+                header=Header(frame_id="odom"),
+                child_frame_id="base_link",
+                pose=PoseWithCovariance(
+                    pose=Pose(
+                        position=Point(x=x, y=y, z=0.0),
+                        orientation=quat,
+                    ),
+                    covariance=[0.0] * 36,
+                ),
+                twist=TwistWithCovariance(
+                    twist=Twist(
+                        linear=Vector3(x=linear, y=0.0, z=0.0),
+                        angular=Vector3(x=0.0, y=0.0, z=angular),
+                    ),
+                    covariance=[0.0] * 36,
+                ),
+            )
+
+            self._mock.inject_message("/odom_raw", odom)
+
+        self._last_left_mm = left_mm
+        self._last_right_mm = right_mm
+
+    def _do_scan(self) -> None:
+        """Read LIDAR and inject LaserScan message."""
+        scan_data = self._transport.get_lds_scan()
+
+        # Index by explicit angle from hardware, rotated 180° to match
+        # the internal convention used by simulation, mapping, and dashboard:
+        # index 0 = backward, index 180 = forward.
+        # Neato hardware returns angle 0 = forward, so we add 180°.
+        ranges = [float("inf")] * 360
+        for i in range(len(scan_data.angles)):
+            angle_idx = (scan_data.angles[i] + 180) % 360
+            if 0 <= angle_idx < 360:
+                if scan_data.error_codes[i] != 0 or scan_data.distances_mm[i] == 0:
+                    ranges[angle_idx] = float("inf")
+                else:
+                    ranges[angle_idx] = scan_data.distances_mm[i] / 1000.0
+
+        scan = LaserScan(
+            header=Header(frame_id="laser"),
+            angle_min=0.0,
+            angle_max=2 * math.pi,
+            angle_increment=2 * math.pi / 360,
+            time_increment=0.0,
+            scan_time=0.33,
+            range_min=0.02,
+            range_max=5.0,
+            ranges=ranges,
+            intensities=[float(i) for i in scan_data.intensities] if scan_data.intensities else [],
+        )
+
+        self._mock.inject_message("/scan", scan)
+
+    def _do_sensors(self) -> None:
+        """Read bumpers and cliff sensors."""
+        bumper_data = self._transport.get_digital_sensors()
+        analog_data = self._transport.get_analog_sensors()
+
+        if analog_data.cliff_detected:
+            logger.warning("Cliff detected! L=%dmm R=%dmm",
+                           analog_data.left_drop_mm, analog_data.right_drop_mm)
+            bumper_data = NeatoBumperData(
+                left_side_bumper=bumper_data.left_side_bumper,
+                left_front_bumper=bumper_data.left_front_bumper or (analog_data.left_drop_mm > analog_data.CLIFF_THRESHOLD_MM),
+                right_side_bumper=bumper_data.right_side_bumper,
+                right_front_bumper=bumper_data.right_front_bumper or (analog_data.right_drop_mm > analog_data.CLIFF_THRESHOLD_MM),
+                left_wheel_drop=bumper_data.left_wheel_drop,
+                right_wheel_drop=bumper_data.right_wheel_drop,
+            )
+
+        with self._bumper_lock:
+            self._bumper_data = bumper_data
+
+        self._mock.inject_message("/bumpers", bumper_data)
+
+    def _do_battery(self) -> None:
+        """Read battery status."""
+        battery_data = self._transport.get_charger()
+
+        with self._bumper_lock:
+            self._battery_data = battery_data
+
+        self._mock.inject_message("/battery", battery_data)
 
     @property
     def bumper_data(self):
