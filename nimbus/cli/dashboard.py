@@ -379,12 +379,14 @@ class LiveDashboard:
 
     def _lidar_to_world(self, index: int, distance: float, pose, deg_per_reading: float) -> tuple:
         """Convert LIDAR polar reading to world coordinates."""
-        # LIDAR angle in robot frame (index 0 = back, index 180 = front)
-        # Add pi to convert correctly to world frame
         lidar_angle_rad = math.radians(index * deg_per_reading)
 
         # Convert to world frame using robot heading
-        world_angle = pose.theta + math.pi + lidar_angle_rad
+        # Neato: index 0 = forward; Sim: index 0 = backward (add pi)
+        if self.runner._neato:
+            world_angle = pose.theta + lidar_angle_rad
+        else:
+            world_angle = pose.theta + math.pi + lidar_angle_rad
 
         world_x = pose.x + distance * math.cos(world_angle)
         world_y = pose.y + distance * math.sin(world_angle)
@@ -424,7 +426,12 @@ class LiveDashboard:
             if distance < max_display_range and distance > 0.05:
                 # Convert polar to cartesian (index -> actual angle)
                 actual_angle_deg = i * degrees_per_reading
-                angle_rad = math.radians(actual_angle_deg - 90)  # 0 deg = backward, 180 = forward = up
+                # Neato: index 0 = forward, increases CW
+                # Sim: index 0 = backward, increases CCW
+                if self.runner._neato:
+                    angle_rad = math.radians(90 + actual_angle_deg)
+                else:
+                    angle_rad = math.radians(actual_angle_deg - 90)
                 r = distance * scale
 
                 x = int(center_x + r * math.cos(angle_rad) * 2)  # *2 for aspect ratio

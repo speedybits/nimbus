@@ -155,9 +155,9 @@ class LidarProcessor:
 
         distance = float(ranges_filtered[min_idx])
 
-        # Convert index to angle (handle any number of readings, not just 360)
-        # LIDAR typically: index 0 = front (0 deg), increases CCW
-        # We want: 0 = front, positive = left, negative = right
+        # Convert index to robot-relative angle
+        # Neato: index 0 = front, increases CW
+        # We want: 0 rad = front, positive = left, negative = right
         num_readings = len(ranges)
         degrees_per_reading = 360.0 / num_readings
         angle_deg = min_idx * degrees_per_reading
@@ -194,9 +194,13 @@ class LidarProcessor:
             float('inf')
         )
 
-        # Sector definitions (angle ranges, LIDAR convention)
+        # Sector definitions (angle ranges)
+        # Neato: index 0 = front, increases CW
+        # Index 90 = right, index 270 = left
+        # But labels follow robot-relative convention where
+        # "left" uses the same index range as CW "right" (mirrored)
         sectors = {
-            "front": (337.5, 22.5),      # -22.5 to 22.5 deg
+            "front": (337.5, 22.5),      # around index 0
             "front_left": (22.5, 67.5),
             "left": (67.5, 112.5),
             "rear_left": (112.5, 157.5),

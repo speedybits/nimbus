@@ -39,8 +39,9 @@ class ObstacleMap:
     bounds expand as exploration continues.
     """
 
-    def __init__(self, config: Optional[MapConfig] = None):
+    def __init__(self, config: Optional[MapConfig] = None, lidar_front_is_index_zero: bool = False):
         self.config = config or MapConfig()
+        self._lidar_front_is_index_zero = lidar_front_is_index_zero
         self._obstacles: dict[tuple[int, int], float] = {}
         self._visited: set[tuple[int, int]] = set()
         self._robot_trail: list[tuple[float, float]] = []
@@ -89,12 +90,14 @@ class ObstacleMap:
             if math.isinf(distance) or math.isnan(distance):
                 continue
 
-            # Calculate world angle
-            # Real LIDAR convention: index 0 = backward, index 180 = forward
-            # Add pi to convert to world frame correctly
+            # Calculate world angle from LIDAR index
             lidar_angle_deg = i * degrees_per_reading
             lidar_angle_rad = math.radians(lidar_angle_deg)
-            world_angle = pose.theta + math.pi + lidar_angle_rad
+            if self._lidar_front_is_index_zero:
+                world_angle = pose.theta + lidar_angle_rad
+            else:
+                # Sim convention: index 0 = backward, add pi
+                world_angle = pose.theta + math.pi + lidar_angle_rad
 
             # Calculate obstacle endpoint in world frame
             obs_x = pose.x + distance * math.cos(world_angle)

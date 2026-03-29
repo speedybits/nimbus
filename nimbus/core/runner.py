@@ -79,7 +79,7 @@ class NimbusRunner:
         self._fusion = SensorFusion()
 
         # Obstacle map for dashboard visualization
-        self._obstacle_map = ObstacleMap()
+        self._obstacle_map = ObstacleMap(lidar_front_is_index_zero=neato)
 
         # Topic buffers (set during start)
         self._scan_buffer = None

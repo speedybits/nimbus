@@ -324,13 +324,11 @@ class NeatoNode:
         """Read LIDAR and inject LaserScan message."""
         scan_data = self._transport.get_lds_scan()
 
-        # Index by explicit angle from hardware, rotated 180° to match
-        # the internal convention used by simulation, mapping, and dashboard:
-        # index 0 = backward, index 180 = forward.
-        # Neato hardware returns angle 0 = forward, so we add 180°.
+        # Index by explicit angle from hardware.
+        # Neato convention: angle 0 = forward, increases CCW.
         ranges = [float("inf")] * 360
         for i in range(len(scan_data.angles)):
-            angle_idx = (scan_data.angles[i] + 180) % 360
+            angle_idx = scan_data.angles[i]
             if 0 <= angle_idx < 360:
                 if scan_data.error_codes[i] != 0 or scan_data.distances_mm[i] == 0:
                     ranges[angle_idx] = float("inf")
