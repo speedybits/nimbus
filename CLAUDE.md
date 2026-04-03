@@ -164,6 +164,53 @@ nimbus test --regression
 pytest --cov=nimbus nimbus/tests/
 ```
 
+## Neato Quickstart
+
+The Neato D4 runs a Jetson Nano inside the chassis. Development happens on your laptop, deployment runs on the Jetson over SSH.
+
+**Network access**: The Jetson uses Avahi/mDNS and is reachable as `mike-jetson.local` on any shared local network (home WiFi or iPhone hotspot). The Jetson auto-connects to "shwashwa" (priority) or "MK_iphone" hotspot (fallback) via NetworkManager.
+
+```bash
+# Connect to the Jetson (works on any shared network)
+ssh mike@mike-jetson.local
+
+# Activate the environment and run nimbus
+source ~/projects/nimbus-env/bin/activate
+nimbus run --transport neato
+
+# Or from your laptop, one-liner:
+ssh mike@mike-jetson.local "source ~/projects/nimbus-env/bin/activate && nimbus run --transport neato"
+```
+
+**Serial port**: `/dev/ttyACM0` (Neato MCU USB behind dustbin)
+**Jetson hostname**: `mike-jetson` (mDNS: `mike-jetson.local`)
+**Python**: 3.10.14 (built from source, venv at `~/projects/nimbus-env`)
+**Home WiFi IP**: `192.168.68.200` (static, on "shwashwa")
+**iPhone hotspot**: DHCP on "MK_iphone" (use `mike-jetson.local` to find it)
+
+Once nimbus is running on the Jetson, the API is available at `http://mike-jetson.local:8080`.
+
+### Deploying code changes
+
+```bash
+# Push from laptop, pull on Jetson
+git push
+ssh mike@mike-jetson.local "cd ~/projects/nimbus && git pull && source ~/projects/nimbus-env/bin/activate && pip install -e ."
+```
+
+### Quick serial test (no nimbus needed)
+
+```bash
+ssh mike@mike-jetson.local "source ~/projects/nimbus-env/bin/activate && python3 -c \"
+import serial, time
+ser = serial.Serial('/dev/ttyACM0', 115200, timeout=2)
+ser.write(b'Help\n')
+time.sleep(0.5)
+print(ser.read(2000).decode('utf-8', errors='ignore')[:500])
+ser.close()
+\""
+```
+
 ## Robot Documentation
 
 The ESP32/robot hardware documentation is located at `/home/mike/projects/b4m_yahboom/doc_txt`

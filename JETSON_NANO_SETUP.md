@@ -223,6 +223,48 @@ Now you can disconnect the monitor/keyboard and work via SSH:
 ssh YOUR_USERNAME@YOUR_JETSON_IP
 ```
 
+### Step 6: Multi-Network Setup (mDNS + iPhone Hotspot)
+
+To access the Jetson from any local network (home WiFi or iPhone hotspot for demos), set up Avahi/mDNS and add multiple WiFi profiles.
+
+**Install Avahi for `.local` hostname resolution:**
+
+```bash
+sudo apt update && sudo apt install -y avahi-daemon avahi-utils libnss-mdns
+sudo systemctl enable avahi-daemon
+sudo systemctl start avahi-daemon
+
+# Verify hostname
+hostnamectl  # Should show "mike-jetson"
+# If not: sudo hostnamectl set-hostname mike-jetson && sudo systemctl restart avahi-daemon
+
+# Verify NSS is configured (should include mdns_minimal)
+grep hosts /etc/nsswitch.conf
+```
+
+**Add iPhone hotspot as a second WiFi profile:**
+
+```bash
+# Connect to the hotspot (must be in range)
+nmcli device wifi connect "MK_iphone" password "YOUR_PASSWORD"
+
+# Set priorities — home WiFi preferred, iPhone as fallback
+nmcli connection modify "shwashwa" connection.autoconnect yes connection.autoconnect-priority 100
+nmcli connection modify "MK_iphone" connection.autoconnect yes connection.autoconnect-priority 0
+```
+
+**Test from your laptop:**
+
+```bash
+# On the same network as the Jetson
+ping mike-jetson.local
+ssh mike@mike-jetson.local
+```
+
+> **Demo workflow**: Turn on iPhone hotspot → power on robot → wait ~30s → `ssh mike@mike-jetson.local` from laptop.
+
+> **Note**: On iPhone hotspot, the Jetson gets a DHCP address in the `172.20.10.x` range. You don't need to know the IP — `mike-jetson.local` resolves it automatically via mDNS.
+
 ---
 
 ## System Configuration
