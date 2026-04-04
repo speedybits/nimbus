@@ -90,7 +90,10 @@ class MockNeatoTransport(NeatoTransport):
 
     def get_charger(self) -> NeatoBatteryData:
         """Return 100% battery."""
-        return NeatoBatteryData(battery_percent=100, charging=False, voltage_mv=14400)
+        return NeatoBatteryData(
+            battery_percent=100, charging=False, voltage_mv=14400,
+            ext_power_present=False, battery_over_temp=False,
+        )
 
     # --- Test helpers ---
 

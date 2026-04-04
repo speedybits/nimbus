@@ -75,6 +75,9 @@ class SensorSnapshot:
     closest_obstacle: float          # meters to nearest obstacle
     obstacle_direction: float        # radians, angle to nearest obstacle
     bumper_triggered: bool = False   # True if any bumper is pressed
+    lidar_intensities: tuple[float, ...] = tuple([0.0] * 360)  # LIDAR intensity per degree
+    charging: bool = False           # True if charger is active
+    battery_percent: int = 0         # 0-100
 
     @classmethod
     def empty(cls) -> "SensorSnapshot":
@@ -87,6 +90,9 @@ class SensorSnapshot:
             closest_obstacle=float('inf'),
             obstacle_direction=0.0,
             bumper_triggered=False,
+            lidar_intensities=tuple([0.0] * 360),
+            charging=False,
+            battery_percent=0,
         )
 
 

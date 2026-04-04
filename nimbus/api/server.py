@@ -338,6 +338,30 @@ def create_app() -> FastAPI:
 
         return _runner.safety_status
 
+    # --- Dock Endpoints ---
+
+    @app.post("/api/dock")
+    async def start_docking():
+        """Start docking with the charging station."""
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        success = _runner.dock()
+        if not success:
+            raise HTTPException(400, detail="Failed to start docking")
+        return {"status": "ok", "behavior": "dock"}
+
+    @app.get("/api/dock/status")
+    async def get_dock_status():
+        """Get current docking status."""
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        status = _runner.get_dock_status()
+        if status is None:
+            raise HTTPException(404, detail="Dock behavior not available")
+        return status
+
     # --- Motor Test Endpoints ---
 
     @app.post("/api/motor_test/velocity")

@@ -97,10 +97,17 @@ class NeatoAnalogData:
 
 @dataclass
 class NeatoBatteryData:
-    """Battery state from GetCharger."""
+    """Battery/charger state from GetCharger.
+
+    ext_power_present: True when robot detects external power (sitting on dock).
+    raw: all key-value pairs from the response, for discovery/debugging.
+    """
     battery_percent: int = 0
     charging: bool = False
     voltage_mv: int = 0
+    ext_power_present: bool = False
+    battery_over_temp: bool = False
+    raw: dict = field(default_factory=dict)
 
 
 class NeatoTransport:
@@ -247,7 +254,11 @@ class NeatoTransport:
         )
 
     def get_charger(self) -> NeatoBatteryData:
-        """Get battery/charger state."""
+        """Get battery/charger state.
+
+        Parses all known fields from GetCharger and preserves the full
+        raw response for discovery of undocumented fields.
+        """
         lines = self._send_command("GetCharger")
         data = self._parse_key_value(lines)
         # VBattV can be float like "15.57" (volts) — convert to millivolts
@@ -258,7 +269,17 @@ class NeatoTransport:
             battery_percent=int(float(data.get("FuelPercent", "0"))),
             charging=data.get("ChargingActive", "0") != "0",
             voltage_mv=voltage_mv,
+            ext_power_present=data.get("ExtPwrPresent", "0") != "0",
+            battery_over_temp=data.get("BatteryOverTemp", "0") != "0",
+            raw=data,
         )
+
+    def raw_command(self, cmd: str) -> list[str]:
+        """Send an arbitrary command and return raw response lines.
+
+        Useful for protocol discovery and debugging.
+        """
+        return self._send_command(cmd)
 
     def _send_command(self, cmd: str) -> list[str]:
         """

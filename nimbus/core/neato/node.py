@@ -328,6 +328,7 @@ class NeatoNode:
         # Index by explicit angle from hardware.
         # Neato convention: angle 0 = forward, increases CCW.
         ranges = [float("inf")] * 360
+        intensities = [0.0] * 360
         for i in range(len(scan_data.angles)):
             angle_idx = scan_data.angles[i]
             if 0 <= angle_idx < 360:
@@ -335,6 +336,8 @@ class NeatoNode:
                     ranges[angle_idx] = float("inf")
                 else:
                     ranges[angle_idx] = scan_data.distances_mm[i] / 1000.0
+                if i < len(scan_data.intensities):
+                    intensities[angle_idx] = float(scan_data.intensities[i])
 
         scan = LaserScan(
             header=Header(frame_id="laser"),
@@ -346,7 +349,7 @@ class NeatoNode:
             range_min=0.02,
             range_max=5.0,
             ranges=ranges,
-            intensities=[float(i) for i in scan_data.intensities] if scan_data.intensities else [],
+            intensities=intensities,
         )
 
         self._mock.inject_message("/scan", scan)

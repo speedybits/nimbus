@@ -33,6 +33,7 @@ from nimbus.behaviors.explore import ExploreBehavior
 from nimbus.behaviors.pet import PetBehavior
 from nimbus.behaviors.motor_test import MotorTestBehavior
 from nimbus.behaviors.claude_control import ClaudeControlBehavior
+from nimbus.behaviors.dock import DockBehavior
 
 
 class NimbusRunner:
@@ -127,6 +128,7 @@ class NimbusRunner:
         self._behavior_manager.register(PetBehavior())
         self._behavior_manager.register(MotorTestBehavior())
         self._behavior_manager.register(ClaudeControlBehavior())
+        self._behavior_manager.register(DockBehavior())
 
     def _setup_signal_handlers(self) -> None:
         """Setup SIGINT/SIGTERM handlers for graceful shutdown."""
@@ -300,8 +302,14 @@ class NimbusRunner:
                 self.set_behavior("idle")
             return
 
-        # Bumper contact — stop immediately and start recovery
-        if bumper and bumper.any_bumper and self._bumper_recovery_phase is None:
+        # Check if current behavior suppresses bumper recovery (e.g., dock reversing)
+        current_behavior = self._behavior_manager.get_behavior(
+            self._behavior_manager.active_behavior
+        ) if self._behavior_manager.active_behavior else None
+        suppress_bumper = getattr(current_behavior, 'suppress_bumper_recovery', False)
+
+        # Bumper contact — stop immediately and start recovery (unless suppressed)
+        if bumper and bumper.any_bumper and self._bumper_recovery_phase is None and not suppress_bumper:
             self._smoother.reset()
             self._send_velocity(0.0, 0.0)
             self._bumper_recovery_start = time.time()
@@ -381,9 +389,12 @@ class NimbusRunner:
         pose = Pose2D()
         velocity = Velocity()
         lidar_ranges = tuple([float('inf')] * 360)
+        lidar_intensities = tuple([0.0] * 360)
         closest = float('inf')
         closest_angle = 0.0
         bumper_triggered = False
+        charging = False
+        battery_percent = 0
 
         # Process odometry
         if self._odom_buffer:
@@ -398,12 +409,23 @@ class NimbusRunner:
                 ranges = np.array(scan_msg.ranges)
                 lidar_ranges = tuple(ranges.tolist())
                 closest, closest_angle = self._lidar_processor.find_closest(ranges)
+                if scan_msg.intensities:
+                    lidar_intensities = tuple(
+                        float(v) for v in scan_msg.intensities
+                    )
 
         # Process bumpers
         if self._bumper_buffer:
             bumper_msg = self._bumper_buffer.latest()
             if bumper_msg and hasattr(bumper_msg, "any_bumper"):
                 bumper_triggered = bumper_msg.any_bumper
+
+        # Process battery/charger
+        if self._battery_buffer:
+            battery_msg = self._battery_buffer.latest()
+            if battery_msg:
+                charging = battery_msg.charging
+                battery_percent = battery_msg.battery_percent
 
         # Create snapshot
         snapshot = self._fusion.update(
@@ -413,6 +435,9 @@ class NimbusRunner:
             closest_obstacle=closest,
             obstacle_direction=closest_angle,
             bumper_triggered=bumper_triggered,
+            lidar_intensities=lidar_intensities,
+            charging=charging,
+            battery_percent=battery_percent,
         )
 
         self._context.update_sensors(snapshot)
@@ -492,6 +517,27 @@ class NimbusRunner:
     def available_behaviors(self) -> list[str]:
         """List of available behavior names."""
         return self._behavior_manager.available_behaviors
+
+    def dock(self) -> bool:
+        """Start docking with the charging station.
+
+        The robot will search for the charger's IR signal, approach it,
+        align with its back facing the dock, and reverse onto the contacts.
+
+        Returns:
+            True if docking behavior started
+        """
+        dock_behavior = self._behavior_manager.get_behavior("dock")
+        if dock_behavior and isinstance(dock_behavior, DockBehavior):
+            return self.set_behavior("dock")
+        return False
+
+    def get_dock_status(self) -> Optional[dict]:
+        """Get current docking status."""
+        dock_behavior = self._behavior_manager.get_behavior("dock")
+        if dock_behavior and isinstance(dock_behavior, DockBehavior):
+            return dock_behavior.get_status()
+        return None
 
     def goto(self, x: float, y: float, theta: Optional[float] = None) -> bool:
         """
