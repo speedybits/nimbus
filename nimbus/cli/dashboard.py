@@ -340,13 +340,48 @@ class LiveDashboard:
                 batt_style = "yellow"
             else:
                 batt_style = "bold red"
-            charging = " (charging)" if battery.charging else ""
-            table.add_row("Battery:", Text(f"{pct}%{charging}", style=batt_style))
+            charging = " ⚡" if battery.charging else ""
+            batt_text = f"{pct}%{charging}"
+            if battery.voltage_mv:
+                batt_text += f" [{battery.voltage_mv}mV]"
+            table.add_row("Battery:", Text(batt_text, style=batt_style))
+        else:
+            table.add_row("Battery:", Text("--", style="dim"))
 
-        # Bumpers
-        sensors = context.sensors
-        if sensors and sensors.bumper_triggered:
-            table.add_row("Bumpers:", Text("CONTACT", style="bold red"))
+        # Bumpers (per-zone detail)
+        bumper = self.runner.bumper_status
+        if bumper:
+            zones = []
+            if bumper.left_front_bumper:
+                zones.append("LF")
+            if bumper.right_front_bumper:
+                zones.append("RF")
+            if bumper.left_side_bumper:
+                zones.append("LS")
+            if bumper.right_side_bumper:
+                zones.append("RS")
+            if bumper.left_wheel_drop:
+                zones.append("L-drop")
+            if bumper.right_wheel_drop:
+                zones.append("R-drop")
+            if zones:
+                table.add_row("Bumpers:", Text(" ".join(zones), style="bold red"))
+            else:
+                table.add_row("Bumpers:", Text("clear", style="dim green"))
+        else:
+            table.add_row("Bumpers:", Text("--", style="dim"))
+
+        # Cliff sensors
+        cliff = self.runner.cliff_status
+        if cliff:
+            left_style = "bold red" if cliff.left_drop_mm > cliff.CLIFF_THRESHOLD_MM else "green"
+            right_style = "bold red" if cliff.right_drop_mm > cliff.CLIFF_THRESHOLD_MM else "green"
+            cliff_text = Text()
+            cliff_text.append(f"L={cliff.left_drop_mm}mm ", style=left_style)
+            cliff_text.append(f"R={cliff.right_drop_mm}mm", style=right_style)
+            table.add_row("Cliff:", cliff_text)
+        else:
+            table.add_row("Cliff:", Text("--", style="dim"))
 
         # Show wander speed settings
         wander = self.runner._behavior_manager.get_behavior("wander")
@@ -839,10 +874,39 @@ class LiveDashboard:
                     "theta": context.target.theta
                 } if context.target else None
             },
-            "logs": self._log.get_recent(20),
-            "available_behaviors": list(self.runner.available_behaviors),
-            "api_port": 8080
         }
+
+        bumper = self.runner.bumper_status
+        if bumper:
+            state["robot"]["bumpers"] = {
+                "left_front": bumper.left_front_bumper,
+                "left_side": bumper.left_side_bumper,
+                "right_front": bumper.right_front_bumper,
+                "right_side": bumper.right_side_bumper,
+                "left_wheel_drop": bumper.left_wheel_drop,
+                "right_wheel_drop": bumper.right_wheel_drop,
+                "any_contact": bumper.any_bumper,
+            }
+
+        cliff = self.runner.cliff_status
+        if cliff:
+            state["robot"]["cliff"] = {
+                "left_drop_mm": cliff.left_drop_mm,
+                "right_drop_mm": cliff.right_drop_mm,
+                "cliff_detected": cliff.cliff_detected,
+            }
+
+        battery = self.runner.battery_status
+        if battery and hasattr(battery, "battery_percent"):
+            state["robot"]["battery"] = {
+                "percent": battery.battery_percent,
+                "charging": battery.charging,
+                "voltage_mv": battery.voltage_mv,
+            }
+
+        state["logs"] = self._log.get_recent(20)
+        state["available_behaviors"] = list(self.runner.available_behaviors)
+        state["api_port"] = 8080
 
         state_path = Path.home() / ".nimbus" / "claude_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

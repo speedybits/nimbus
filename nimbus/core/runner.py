@@ -86,6 +86,7 @@ class NimbusRunner:
         self._odom_buffer = None
         self._bumper_buffer = None
         self._battery_buffer = None
+        self._cliff_buffer = None
         self._cmd_publisher = None
 
         # Control
@@ -226,10 +227,11 @@ class NimbusRunner:
             buffer_size=1
         )
 
-        # Bumper and battery data from Neato sensor loop
-        from nimbus.core.neato.transport import NeatoBumperData, NeatoBatteryData
+        # Bumper, battery, and cliff data from Neato sensor loop
+        from nimbus.core.neato.transport import NeatoBumperData, NeatoBatteryData, NeatoAnalogData
         self._bumper_buffer = self._node.subscribe("/bumpers", NeatoBumperData, buffer_size=1)
         self._battery_buffer = self._node.subscribe("/battery", NeatoBatteryData, buffer_size=1)
+        self._cliff_buffer = self._node.subscribe("/cliff", NeatoAnalogData, buffer_size=1)
 
         self._cmd_publisher = self._node.publisher("/cmd_vel", Twist)
 
@@ -534,6 +536,20 @@ class NimbusRunner:
         """Get latest battery data, or None if unavailable."""
         if self._battery_buffer:
             return self._battery_buffer.latest()
+        return None
+
+    @property
+    def bumper_status(self):
+        """Get latest per-zone bumper data, or None if unavailable."""
+        if self._bumper_buffer:
+            return self._bumper_buffer.latest()
+        return None
+
+    @property
+    def cliff_status(self):
+        """Get latest cliff/analog sensor data, or None if unavailable."""
+        if self._cliff_buffer:
+            return self._cliff_buffer.latest()
         return None
 
     @property

@@ -41,6 +41,9 @@ class SensorResponse(BaseModel):
     lidar_histogram: list[Optional[float]] = Field(default_factory=list, description="Polar histogram (72 sectors)")
     odom_age: Optional[float] = Field(None, description="Seconds since last odometry message")
     odom_stale: Optional[bool] = Field(None, description="Whether odometry data is stale (>1s old)")
+    bumpers: Optional[dict] = Field(None, description="Per-zone bumper states (Neato only)")
+    cliff: Optional[dict] = Field(None, description="Cliff sensor distances in mm (Neato only)")
+    battery: Optional[dict] = Field(None, description="Battery state: percent, charging, voltage_mv")
 
 
 class NavigateRequest(BaseModel):

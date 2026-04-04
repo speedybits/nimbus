@@ -225,6 +225,41 @@ def create_app() -> FastAPI:
             odom_age = safe_float(_runner._odom_buffer.age)
             odom_stale = _runner._odom_buffer.is_stale
 
+        # Bumper detail
+        bumper_data = None
+        bumper = _runner.bumper_status
+        if bumper:
+            bumper_data = {
+                "left_front": bumper.left_front_bumper,
+                "left_side": bumper.left_side_bumper,
+                "right_front": bumper.right_front_bumper,
+                "right_side": bumper.right_side_bumper,
+                "left_wheel_drop": bumper.left_wheel_drop,
+                "right_wheel_drop": bumper.right_wheel_drop,
+                "any": bumper.any_bumper,
+            }
+
+        # Cliff sensors
+        cliff_data = None
+        cliff = _runner.cliff_status
+        if cliff:
+            cliff_data = {
+                "left_drop_mm": cliff.left_drop_mm,
+                "right_drop_mm": cliff.right_drop_mm,
+                "wall_sensor_mm": cliff.wall_sensor_mm,
+                "cliff_detected": cliff.cliff_detected,
+            }
+
+        # Battery
+        battery_data = None
+        battery = _runner.battery_status
+        if battery:
+            battery_data = {
+                "percent": battery.battery_percent,
+                "charging": battery.charging,
+                "voltage_mv": battery.voltage_mv,
+            }
+
         return SensorResponse(
             timestamp=sensors.timestamp.isoformat(),
             pose={
@@ -241,6 +276,9 @@ def create_app() -> FastAPI:
             lidar_histogram=[safe_float(r) for r in sensors.lidar_ranges[:72]],
             odom_age=odom_age,
             odom_stale=odom_stale,
+            bumpers=bumper_data,
+            cliff=cliff_data,
+            battery=battery_data,
         )
 
     @app.post("/api/navigate")

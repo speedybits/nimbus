@@ -127,6 +127,37 @@ async def broadcast_telemetry(runner) -> None:
             },
             "closest_obstacle": sensors.closest_obstacle,
         }
+        # Bumper detail
+        bumper = runner.bumper_status
+        if bumper:
+            data["bumpers"] = {
+                "left_front": bumper.left_front_bumper,
+                "left_side": bumper.left_side_bumper,
+                "right_front": bumper.right_front_bumper,
+                "right_side": bumper.right_side_bumper,
+                "left_wheel_drop": bumper.left_wheel_drop,
+                "right_wheel_drop": bumper.right_wheel_drop,
+                "any": bumper.any_bumper,
+            }
+
+        # Cliff sensors
+        cliff = runner.cliff_status
+        if cliff:
+            data["cliff"] = {
+                "left_drop_mm": cliff.left_drop_mm,
+                "right_drop_mm": cliff.right_drop_mm,
+                "cliff_detected": cliff.cliff_detected,
+            }
+
+        # Battery
+        battery = runner.battery_status
+        if battery:
+            data["battery"] = {
+                "percent": battery.battery_percent,
+                "charging": battery.charging,
+                "voltage_mv": battery.voltage_mv,
+            }
+
         await telemetry_manager.broadcast(data)
 
 

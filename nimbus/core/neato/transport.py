@@ -250,10 +250,14 @@ class NeatoTransport:
         """Get battery/charger state."""
         lines = self._send_command("GetCharger")
         data = self._parse_key_value(lines)
+        # VBattV can be float like "15.57" (volts) — convert to millivolts
+        vbatt_str = data.get("VBattV", "0")
+        vbatt_v = float(vbatt_str)
+        voltage_mv = int(vbatt_v * 1000) if vbatt_v < 100 else int(vbatt_v)
         return NeatoBatteryData(
-            battery_percent=int(data.get("FuelPercent", "0")),
+            battery_percent=int(float(data.get("FuelPercent", "0"))),
             charging=data.get("ChargingActive", "0") != "0",
-            voltage_mv=int(data.get("VBattV", "0")),
+            voltage_mv=voltage_mv,
         )
 
     def _send_command(self, cmd: str) -> list[str]:

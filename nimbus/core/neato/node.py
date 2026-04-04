@@ -26,7 +26,7 @@ from nimbus.core.xrce.messages import (
     Header, Point, Quaternion, Pose, Vector3,
     PoseWithCovariance, TwistWithCovariance,
 )
-from .transport import NeatoTransport, SerialDisconnectedError, NeatoBumperData
+from .transport import NeatoTransport, SerialDisconnectedError, NeatoBumperData, NeatoBatteryData
 from .kinematics import velocity_to_wheel_speeds, wheel_speeds_to_motor_command, update_odometry
 
 
@@ -71,9 +71,10 @@ class NeatoNode:
         self._last_left_mm = None
         self._last_right_mm = None
 
-        # Latest bumper/battery state
+        # Latest bumper/battery/cliff state
         self._bumper_data = None
         self._battery_data = None
+        self._analog_data = None
         self._bumper_lock = threading.Lock()
 
         # Serial health tracking
@@ -239,8 +240,8 @@ class NeatoNode:
                 if tick % 8 == 3:
                     self._do_sensors()
 
-                # Battery every 40th tick
-                if tick % 40 == 19:
+                # Battery every 8th tick (offset from bumpers, isolated from errors)
+                if tick % 8 == 7:
                     self._do_battery()
 
                 self._record_success()
@@ -369,12 +370,17 @@ class NeatoNode:
 
         with self._bumper_lock:
             self._bumper_data = bumper_data
+            self._analog_data = analog_data
 
         self._mock.inject_message("/bumpers", bumper_data)
+        self._mock.inject_message("/cliff", analog_data)
 
     def _do_battery(self) -> None:
         """Read battery status."""
-        battery_data = self._transport.get_charger()
+        try:
+            battery_data = self._transport.get_charger()
+        except Exception:
+            return
 
         with self._bumper_lock:
             self._battery_data = battery_data
@@ -392,6 +398,12 @@ class NeatoNode:
         """Latest battery reading (thread-safe)."""
         with self._bumper_lock:
             return self._battery_data
+
+    @property
+    def analog_data(self):
+        """Latest cliff/analog sensor reading (thread-safe)."""
+        with self._bumper_lock:
+            return self._analog_data
 
     @staticmethod
     def _euler_to_quaternion(roll: float, pitch: float, yaw: float) -> Quaternion:
