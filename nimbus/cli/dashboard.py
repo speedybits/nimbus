@@ -348,7 +348,7 @@ class LiveDashboard:
         else:
             table.add_row("Battery:", Text("--", style="dim"))
 
-        # Bumpers (per-zone detail)
+        # Bumpers (contact sensors only)
         bumper = self.runner.bumper_status
         if bumper:
             zones = []
@@ -360,10 +360,6 @@ class LiveDashboard:
                 zones.append("LS")
             if bumper.right_side_bumper:
                 zones.append("RS")
-            if bumper.left_wheel_drop:
-                zones.append("L-drop")
-            if bumper.right_wheel_drop:
-                zones.append("R-drop")
             if zones:
                 table.add_row("Bumpers:", Text(" ".join(zones), style="bold red"))
             else:
@@ -382,6 +378,20 @@ class LiveDashboard:
             table.add_row("Cliff:", cliff_text)
         else:
             table.add_row("Cliff:", Text("--", style="dim"))
+
+        # Wheel drop (lifted off ground)
+        if bumper:
+            if bumper.left_wheel_drop or bumper.right_wheel_drop:
+                drops = []
+                if bumper.left_wheel_drop:
+                    drops.append("L")
+                if bumper.right_wheel_drop:
+                    drops.append("R")
+                table.add_row("Lift:", Text(" ".join(drops), style="bold red"))
+            else:
+                table.add_row("Lift:", Text("clear", style="dim green"))
+        else:
+            table.add_row("Lift:", Text("--", style="dim"))
 
         # Show wander speed settings
         wander = self.runner._behavior_manager.get_behavior("wander")

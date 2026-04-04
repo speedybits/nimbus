@@ -95,6 +95,11 @@ class NimbusRunner:
         self._control_rate = 10.0  # Hz
         self._last_cmd_time = 0.0
 
+        # Bumper recovery state
+        self._bumper_recovery_start = 0.0  # timestamp when recovery began
+        self._bumper_recovery_phase = None  # None, "backup", "turn"
+        self._bumper_turn_direction = 0.0   # +1 = left (CCW), -1 = right (CW)
+
         # Register built-in behaviors
         self._register_behaviors()
 
@@ -282,6 +287,58 @@ class NimbusRunner:
         """Single control loop iteration."""
         # Read sensors
         self._update_sensors()
+
+        # Wheel drop = robot lifted off ground — stop and go idle
+        bumper = self.bumper_status
+        if bumper and (bumper.left_wheel_drop or bumper.right_wheel_drop):
+            self._context.set_state(RobotState.EMERGENCY_STOP)
+            self._smoother.reset()
+            self._send_velocity(0.0, 0.0)
+            self._context.set_velocity_cmd(Velocity.stop())
+            self._bumper_recovery_phase = None
+            if self._behavior_manager.active_behavior != "idle":
+                self.set_behavior("idle")
+            return
+
+        # Bumper contact — stop immediately and start recovery
+        if bumper and bumper.any_bumper and self._bumper_recovery_phase is None:
+            self._smoother.reset()
+            self._send_velocity(0.0, 0.0)
+            self._bumper_recovery_start = time.time()
+            self._bumper_recovery_phase = "backup"
+            # Turn away from the side that hit
+            if bumper.left_bumper and not bumper.right_bumper:
+                self._bumper_turn_direction = -1.0  # turn right (CW)
+            elif bumper.right_bumper and not bumper.left_bumper:
+                self._bumper_turn_direction = 1.0   # turn left (CCW)
+            else:
+                self._bumper_turn_direction = -1.0  # default: turn right
+
+        # Execute bumper recovery (overrides normal behavior)
+        if self._bumper_recovery_phase is not None:
+            elapsed = time.time() - self._bumper_recovery_start
+            backup_speed = self.config.navigation.reverse_speed
+            turn_speed = 0.8  # rad/s
+
+            if self._bumper_recovery_phase == "backup" and elapsed < 1.0:
+                # Phase 1: back up for 1 second
+                self._send_velocity(-backup_speed, 0.0)
+                self._context.set_velocity_cmd(Velocity(-backup_speed, 0.0))
+            elif self._bumper_recovery_phase == "backup":
+                # Transition to turn phase
+                self._bumper_recovery_phase = "turn"
+                self._bumper_recovery_start = time.time()
+            elif self._bumper_recovery_phase == "turn" and elapsed < 0.8:
+                # Phase 2: turn away for 0.8 seconds
+                angular = turn_speed * self._bumper_turn_direction
+                self._send_velocity(0.0, angular)
+                self._context.set_velocity_cmd(Velocity(0.0, angular))
+            else:
+                # Recovery complete
+                self._bumper_recovery_phase = None
+                self._send_velocity(0.0, 0.0)
+                self._context.set_velocity_cmd(Velocity.stop())
+            return
 
         # Get velocity from behavior
         velocity = self._behavior_manager.compute(self._context)
