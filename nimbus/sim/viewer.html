@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nimbus Sim</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #10131a; color: #cfd6e4; font: 14px system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { padding: 8px 14px; display: flex; gap: 18px; align-items: baseline; border-bottom: 1px solid #232a38; }
+  header b { color: #fff; }
+  #stat { font-variant-numeric: tabular-nums; color: #8fa0bd; }
+  #wrap { flex: 1; min-height: 0; }
+  canvas { width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<header>
+  <b>Nimbus Sim</b>
+  <span id="stat">connecting…</span>
+  <span style="margin-left:auto"><label><input type="checkbox" id="rays" checked> LIDAR</label>
+  <label><input type="checkbox" id="trail" checked> trail</label></span>
+</header>
+<div id="wrap"><canvas id="c"></canvas></div>
+<script>
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+const stat = document.getElementById("stat");
+let world = null, wallCanvas = null, state = null, trail = [];
+const ROBOT_R = 0.15; // matches SimulatedWorld._is_collision radius
+
+async function loadWorld() {
+  const r = await fetch("/api/sim/world");
+  if (!r.ok) { stat.textContent = "not running in --sim mode"; return false; }
+  world = await r.json();
+  // Pre-render walls once, 1 px per cell, row 0 at the bottom (y up)
+  wallCanvas = document.createElement("canvas");
+  wallCanvas.width = world.width; wallCanvas.height = world.height;
+  const w = wallCanvas.getContext("2d");
+  w.fillStyle = "#e6ebf5";
+  world.rows.forEach((row, gy) => {
+    for (let gx = 0; gx < row.length; gx++) if (row[gx] === "#") w.fillRect(gx, world.height - 1 - gy, 1, 1);
+  });
+  return true;
+}
+
+function fit() {
+  const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1;
+  cv.width = r.width * d; cv.height = r.height * d;
+}
+addEventListener("resize", fit);
+
+// world meters -> canvas px
+function view() {
+  const mw = world.width * world.resolution, mh = world.height * world.resolution;
+  const s = Math.min(cv.width / mw, cv.height / mh) * 0.96;
+  const ox = (cv.width - mw * s) / 2, oy = (cv.height - mh * s) / 2;
+  return { s, ox, oy, mh,
+    px: x => ox + (x + world.origin_x) * s,
+    py: y => oy + (mh - (y + world.origin_y)) * s };
+}
+
+function draw() {
+  ctx.fillStyle = "#10131a"; ctx.fillRect(0, 0, cv.width, cv.height);
+  if (!world) return;
+  const v = view();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(wallCanvas, v.ox, v.oy, world.width * world.resolution * v.s, world.height * world.resolution * v.s);
+  if (!state) return;
+
+  if (document.getElementById("trail").checked && trail.length > 1) {
+    ctx.strokeStyle = "rgba(90,200,250,.55)"; ctx.lineWidth = 2; ctx.beginPath();
+    trail.forEach((p, i) => i ? ctx.lineTo(v.px(p[0]), v.py(p[1])) : ctx.moveTo(v.px(p[0]), v.py(p[1])));
+    ctx.stroke();
+  }
+  const cx = v.px(state.x), cy = v.py(state.y);
+  if (document.getElementById("rays").checked) {
+    ctx.strokeStyle = "rgba(255,90,90,.35)"; ctx.lineWidth = 1; ctx.beginPath();
+    const n = state.rays.length;
+    state.rays.forEach((d, i) => {
+      if (d == null) return;
+      const a = state.theta + Math.PI + i * 2 * Math.PI / n; // index 0 = backward
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(v.px(state.x + d * Math.cos(a)), v.py(state.y + d * Math.sin(a)));
+    });
+    ctx.stroke();
+  }
+  // robot body + heading wedge (canvas y is flipped, so negate the angle)
+  const r = ROBOT_R * v.s;
+  ctx.fillStyle = "#34c759"; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill();
+  ctx.strokeStyle = "#0b3d1a"; ctx.lineWidth = 3; ctx.beginPath();
+  ctx.moveTo(cx, cy); ctx.lineTo(cx + r * 1.4 * Math.cos(-state.theta), cy + r * 1.4 * Math.sin(-state.theta));
+  ctx.stroke();
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/sim/state");
+    state = await r.json();
+    const last = trail[trail.length - 1];
+    if (!last || Math.hypot(state.x - last[0], state.y - last[1]) > 0.03) {
+      trail.push([state.x, state.y]);
+      if (trail.length > 2000) trail.shift();
+    }
+    const deg = ((90 - state.theta * 180 / Math.PI) % 360 + 360) % 360;
+    stat.textContent = `x ${state.x.toFixed(2)} m   y ${state.y.toFixed(2)} m   heading ${deg.toFixed(0)}° (compass)   ${state.state ?? ""}`;
+  } catch { stat.textContent = "nimbus unreachable"; }
+}
+
+(async () => {
+  fit();
+  if (!await loadWorld()) return;
+  setInterval(poll, 100);
+  (function loop() { draw(); requestAnimationFrame(loop); })();
+})();
+</script>
+</body>
+</html>

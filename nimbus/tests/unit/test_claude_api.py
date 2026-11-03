@@ -242,9 +242,9 @@ class TestClaudeScanEndpoint:
         runner = MagicMock()
         ctx = RobotContext()
 
-        # Wall ahead at 0.5m, clear sides
+        # Wall ahead at 0.5m, clear sides (raw scan: index 0 = backward, 180 = forward)
         ranges = list([3.0] * 360)
-        for i in list(range(0, 30)) + list(range(330, 360)):
+        for i in range(150, 210):
             ranges[i] = 0.5
 
         snapshot = SensorSnapshot(

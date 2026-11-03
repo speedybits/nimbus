@@ -6,6 +6,8 @@ Provides HTTP endpoints for external control and monitoring.
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Optional
 import asyncio
@@ -675,7 +677,9 @@ def create_app() -> FastAPI:
         from nimbus.sensors.lidar import LidarProcessor, LidarConfig
         from nimbus.navigation.vfh import VFHNavigator, VFHConfig
 
-        ranges = np.array(sensors.lidar_ranges, dtype=np.float32)
+        # Raw scan has index 0 = backward (see sensors/mapping.py); LidarProcessor
+        # expects index 0 = front, so rotate by half a turn before summarizing.
+        ranges = np.roll(np.array(sensors.lidar_ranges, dtype=np.float32), len(sensors.lidar_ranges) // 2)
         robot_theta = sensors.pose.theta
 
         # Fresh processors (no shared state, thread-safe)
@@ -824,6 +828,41 @@ def create_app() -> FastAPI:
             distance_remaining=round(dist_remaining, 2),
             duration=round(duration, 1),
         )
+
+    # --- Simulation viewer (only meaningful with --sim) ---
+    @app.get("/api/sim/world")
+    async def sim_world():
+        """Static world geometry for the /sim viewer: occupied cells + metrics."""
+        world = getattr(_runner, "sim_world", None)
+        if world is None:
+            raise HTTPException(status_code=404, detail="Not running in simulation mode")
+        return {
+            "width": world.width,
+            "height": world.height,
+            "resolution": world.resolution,
+            "origin_x": world._origin_x,
+            "origin_y": world._origin_y,
+            "rows": ["".join("#" if c else "." for c in row) for row in world.grid],
+        }
+
+    @app.get("/api/sim/state")
+    async def sim_state():
+        """Ground-truth robot pose and LIDAR ranges (from the world, not odometry)."""
+        world = getattr(_runner, "sim_world", None)
+        if world is None:
+            raise HTTPException(status_code=404, detail="Not running in simulation mode")
+        x, y, theta = world.get_robot_pose()
+        return {
+            "x": x,
+            "y": y,
+            "theta": theta,
+            "rays": [safe_float(r) for r in world.raycast(num_rays=120)],
+            "state": _runner.context.state.name if _runner else None,
+        }
+
+    @app.get("/sim", response_class=HTMLResponse)
+    async def sim_viewer():
+        return (Path(__file__).parent.parent / "sim" / "viewer.html").read_text()
 
     @app.get("/api/claude/map", response_model=ClaudeMapResponse)
     async def claude_map():

@@ -61,6 +61,7 @@ class NimbusRunner:
         sim: bool = False,   # Use simulation mode
         neato: bool = False,  # Use Neato serial transport
     ):
+        self.sim_world = None  # SimulatedWorld when running in sim mode (used by /sim viewer)
         self.config = config or NimbusConfig.load()
         self._mock = mock
         self._sim = sim
@@ -163,6 +164,7 @@ class NimbusRunner:
                 if sim_config.spawn_theta is not None:
                     world.robot_theta = sim_config.spawn_theta
 
+                self.sim_world = world
                 transport = SimNeatoTransport(world)
                 self._node = NeatoNode(
                     transport=transport,
@@ -196,6 +198,7 @@ class NimbusRunner:
             if sim_config.spawn_theta is not None:
                 world.robot_theta = sim_config.spawn_theta
 
+            self.sim_world = world
             self._node = SimulatorNode(
                 world=world,
                 tick_rate=sim_config.tick_rate,
