@@ -53,8 +53,8 @@ class TestDockBehavior:
             search_timeout=5.0,
             reverse_timeout=5.0,
             detector_config=DockDetectorConfig(
-                intensity_threshold=1500.0,
-                intensity_ratio=3.0,
+                intensity_threshold=400.0,
+                intensity_ratio=3.5,
             ),
         )
         self.behavior.activate()
@@ -145,7 +145,9 @@ class TestDockBehavior:
         intensities = _make_ir_intensities(peak_angle=180)
         ctx = _make_context(lidar_intensities=intensities)
 
-        self.behavior.compute(ctx)
+        # Run several ticks to let the smoothed angle EMA converge to 180°
+        for _ in range(15):
+            self.behavior.compute(ctx)
 
         assert self.behavior.state == DockState.REVERSING
 

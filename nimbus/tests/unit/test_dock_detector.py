@@ -48,8 +48,8 @@ class TestDockDetector:
 
     def setup_method(self):
         self.detector = DockDetector(DockDetectorConfig(
-            intensity_threshold=1500.0,
-            intensity_ratio=3.0,
+            intensity_threshold=400.0,
+            intensity_ratio=3.5,
             min_peak_width_deg=2,
             max_peak_width_deg=30,
         ))
@@ -138,8 +138,8 @@ class TestDockDetector:
     def test_low_intensity_peak_ignored(self):
         """Peak below absolute threshold should be ignored."""
         ranges, intensities = _make_scan(
-            base_intensity=300.0, peak_angle=90,
-            peak_intensity=800.0,  # 2.7× ratio but below absolute threshold of 1500
+            base_intensity=80.0, peak_angle=90,
+            peak_intensity=200.0,  # 2.5× ratio but below absolute threshold of 400
         )
         result = self.detector.detect(ranges, intensities)
         assert result is None

@@ -32,13 +32,14 @@ class DockDetectorConfig:
     """Tunable parameters for IR dock detection.
 
     Calibrated from real Neato D4 BotVac data (2026-04-03):
-    - Baseline intensity: ~610 (varies with surface reflectivity)
-    - Charger IR peak: ~4500 (7.4× baseline)
-    - Peak width: ~8° at 163mm range
-    - Secondary reflections visible at ~20-30° offset from main peak
+    - On dock: baseline ~610, peak ~4500 (7.4×)
+    - Facing dock at 6in: baseline ~150, peak ~950 (6×)
+    - Peak width: ~8° at close range
+    The ratio check is the primary filter; the absolute threshold just
+    rejects scans where everything is uniformly low/noisy.
     """
-    intensity_threshold: float = 1500.0  # min absolute intensity for IR signal
-    intensity_ratio: float = 3.0         # peak must be N× median intensity
+    intensity_threshold: float = 400.0   # min absolute intensity for IR signal
+    intensity_ratio: float = 3.5         # peak must be N× median intensity
     min_peak_width_deg: int = 2          # minimum angular width of IR peak
     max_peak_width_deg: int = 30         # maximum (reject wide reflections)
     min_valid_readings: int = 60         # need enough data to compute median
@@ -118,68 +119,72 @@ class DockDetector:
         if not peaks:
             return None
 
-        # Score each peak and pick the best
-        best_detection = None
-        best_score = 0.0
-
+        # Filter peaks by width
+        valid_peaks = []
         for peak_angles in peaks:
             width = len(peak_angles)
-            if (width < self.config.min_peak_width_deg
-                    or width > self.config.max_peak_width_deg):
-                continue
+            if (width >= self.config.min_peak_width_deg
+                    and width <= self.config.max_peak_width_deg):
+                valid_peaks.append(peak_angles)
 
-            # Find the angle with highest intensity within the peak
-            max_intensity = 0.0
-            max_angle = 0
-            for a in peak_angles:
-                if intensities[a] > max_intensity:
-                    max_intensity = intensities[a]
-                    max_angle = a
+        if not valid_peaks:
+            return None
 
-            # Compute intensity-weighted center angle
-            center_angle = self._weighted_center(peak_angles, intensities)
+        # Merge ALL valid peaks into a single detection.
+        # The Neato charger has dual IR emitters that create two peaks
+        # (e.g., at 325° and 30°). Computing the intensity-weighted center
+        # across all hot angles gives the true charger bearing (~0°).
+        all_hot = []
+        for peak_angles in valid_peaks:
+            all_hot.extend(peak_angles)
 
-            # Distance at peak
-            distance = ranges[max_angle]
-            if distance == float('inf') or distance <= 0:
-                # Use average distance across peak
-                dists = [ranges[a] for a in peak_angles
-                         if ranges[a] != float('inf') and ranges[a] > 0]
-                if not dists:
-                    continue
-                distance = sum(dists) / len(dists)
+        # Intensity-weighted center across all peaks
+        center_angle = self._weighted_center(all_hot, intensities)
 
-            # Score: ratio above median, peak shape quality
-            ratio = max_intensity / median_intensity if median_intensity > 0 else 0
-            # Confidence: sigmoid-like mapping of ratio
-            confidence = min(1.0, (ratio - self.config.intensity_ratio) /
-                           (self.config.intensity_ratio * 2))
-            confidence = max(0.0, confidence)
+        # Find overall max intensity and its distance
+        max_intensity = 0.0
+        max_angle = 0
+        for a in all_hot:
+            if intensities[a] > max_intensity:
+                max_intensity = intensities[a]
+                max_angle = a
 
-            # Prefer narrower peaks (more directional = more likely real IR)
-            width_score = 1.0 - abs(width - 8) / 20.0
-            width_score = max(0.0, min(1.0, width_score))
+        distance = ranges[max_angle]
+        if distance == float('inf') or distance <= 0:
+            dists = [ranges[a] for a in all_hot
+                     if ranges[a] != float('inf') and ranges[a] > 0]
+            if not dists:
+                return None
+            distance = sum(dists) / len(dists)
 
-            score = confidence * 0.7 + width_score * 0.3
+        # Score based on intensity ratio above median
+        ratio = max_intensity / median_intensity if median_intensity > 0 else 0
+        confidence = min(1.0, (ratio - self.config.intensity_ratio) /
+                       (self.config.intensity_ratio * 2))
+        confidence = max(0.0, confidence)
 
-            if score > best_score:
-                best_score = score
-                best_detection = DockDetection(
-                    detected=True,
-                    confidence=score,
-                    angle_deg=center_angle,
-                    distance_m=distance,
-                    intensity_peak=max_intensity,
-                )
+        total_width = len(all_hot)
+        width_score = 1.0 - abs(total_width - 12) / 30.0
+        width_score = max(0.0, min(1.0, width_score))
 
-        if best_detection:
-            logger.debug(
-                "Dock IR detected at %d° dist=%.2fm intensity=%.0f conf=%.2f",
-                best_detection.angle_deg, best_detection.distance_m,
-                best_detection.intensity_peak, best_detection.confidence,
-            )
+        score = confidence * 0.7 + width_score * 0.3
 
-        return best_detection
+        detection = DockDetection(
+            detected=True,
+            confidence=score,
+            angle_deg=center_angle,
+            distance_m=distance,
+            intensity_peak=max_intensity,
+        )
+
+        logger.debug(
+            "Dock IR detected at %d° dist=%.2fm intensity=%.0f conf=%.2f "
+            "(%d peaks, %d total hot angles)",
+            center_angle, distance, max_intensity, score,
+            len(valid_peaks), total_width,
+        )
+
+        return detection
 
     def _cluster_angles(self, angles: set[int]) -> list[list[int]]:
         """Group adjacent angles into clusters, handling 360→0 wraparound."""

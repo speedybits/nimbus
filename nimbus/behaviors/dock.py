@@ -83,6 +83,11 @@ class DockBehavior(Behavior):
         self._consecutive_detections = 0
         self._required_detections = 3  # need N consecutive before acting
 
+        # Smoothed angle (exponential moving average to prevent oscillation)
+        self._smoothed_angle_sin = 0.0
+        self._smoothed_angle_cos = 1.0  # default: 0°
+        self._angle_smooth_alpha = 0.3  # EMA weight (0=all history, 1=latest only)
+
     @property
     def state(self) -> DockState:
         return self._state
@@ -126,6 +131,11 @@ class DockBehavior(Behavior):
         if detection and detection.detected:
             self._consecutive_detections += 1
             self._last_detection = detection
+            # Update smoothed angle (EMA in sin/cos space for wraparound)
+            a = self._angle_smooth_alpha
+            rad = math.radians(detection.angle_deg)
+            self._smoothed_angle_sin = (1 - a) * self._smoothed_angle_sin + a * math.sin(rad)
+            self._smoothed_angle_cos = (1 - a) * self._smoothed_angle_cos + a * math.cos(rad)
         else:
             self._consecutive_detections = 0
 
@@ -144,6 +154,12 @@ class DockBehavior(Behavior):
             return Velocity.stop()
         else:
             return Velocity.stop()
+
+    @property
+    def _smoothed_angle_deg(self) -> int:
+        """Get the smoothed IR bearing in degrees."""
+        rad = math.atan2(self._smoothed_angle_sin, self._smoothed_angle_cos)
+        return int(round(math.degrees(rad))) % 360
 
     def _do_searching(
         self, context: RobotContext, detection: Optional[DockDetection]
@@ -188,12 +204,11 @@ class DockBehavior(Behavior):
             self._transition(DockState.ALIGNING)
             return self._do_aligning(context, detection)
 
-        # Steer toward the IR signal
-        # angle_deg is 0=front. Convert to steering error.
-        angle_error = det.angle_deg
+        # Steer toward the smoothed IR bearing (prevents oscillation
+        # when charger has dual IR emitters)
+        angle_error = self._smoothed_angle_deg
         if angle_error > 180:
             angle_error -= 360
-        # angle_error: positive = IR is to the left, negative = to the right
 
         angle_error_rad = math.radians(angle_error)
 
@@ -217,13 +232,12 @@ class DockBehavior(Behavior):
             self._transition(DockState.SEARCHING)
             return Velocity(linear=0.0, angular=self._search_angular_speed)
 
-        det = self._last_detection
         context.set_state(RobotState.NAVIGATING)
 
+        # Use smoothed angle to prevent oscillation from dual IR beams
         # We want the IR signal at 180° (directly behind us)
-        # Current IR angle: det.angle_deg (0=front)
-        # Error = how far the IR is from 180°
-        angle_to_180 = det.angle_deg - 180
+        smoothed = self._smoothed_angle_deg
+        angle_to_180 = smoothed - 180
         if angle_to_180 > 180:
             angle_to_180 -= 360
         elif angle_to_180 < -180:

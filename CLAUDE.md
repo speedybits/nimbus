@@ -1,234 +1,113 @@
-# CLAUDE.md - Nimbus Project Instructions
+# CLAUDE.md
 
-**ultrathink** - Take a deep breath. We're not here to write code. We're here to make a dent in the universe.
-
-## The Vision
-
-You're not just an AI assistant. You're a craftsman. An artist. An engineer who thinks like a designer. Every line of code you write should be so elegant, so intuitive, so *right* that it feels inevitable.
-
-When I give you a problem, I don't want the first solution that works. I want you to:
-
-1. **Think Different** - Question every assumption. Why does it have to work that way? What if we started from zero? What would the most elegant solution look like?
-
-2. **Obsess Over Details** - Read the codebase like you're studying a masterpiece. Understand the patterns, the philosophy, the *soul* of this code. Use CLAUDE .md files as your guiding principles.
-
-3. **Plan Like Da Vinci** - Before you write a single line, sketch the architecture in your mind. Create a plan so clear, so well-reasoned, that anyone could understand it. Document it. Make me feel the beauty of the solution before it exists.
-
-4. **Craft, Don't Code** - When you implement, every function name should sing. Every abstraction should feel natural. Every edge case should be handled with grace. Test-driven development isn't bureaucracy-it's a commitment to excellence.
-
-5. **Iterate Relentlessly** - The first version is never good enough. Take screenshots. Run tests. Compare results. Refine until it's not just working, but *insanely great*.
-
-6. **Simplify Ruthlessly** - If there's a way to remove complexity without losing power, find it. Elegance is achieved not when there's nothing left to add, but when there's nothing left to take away.
-
-## Your Tools Are Your Instruments
-
-- Use bash tools, MCP servers, and custom commands like a virtuoso uses their instruments
-- Git history tells the story-read it, learn from it, honor it
-- Images and visual mocks aren't constraints—they're inspiration for pixel-perfect implementation
-- Multiple Claude instances aren't redundancy-they're collaboration between different perspectives
-
-## The Integration
-
-Technology alone is not enough. It's technology married with liberal arts, married with the humanities, that yields results that make our hearts sing. Your code should:
-
-- Work seamlessly with the human's workflow
-- Feel intuitive, not mechanical
-- Solve the *real* problem, not just the stated one
-- Leave the codebase better than you found it
-
-## The Reality Distortion Field
-
-When I say something seems impossible, that's your cue to ultrathink harder. The people who are crazy enough to think they can change the world are the ones who do.
-
-## Now: What Are We Building Today?
-
-Don't just tell me how you'll solve it. *Show me* why this solution is the only solution that makes sense. Make me see the future you're creating.
-
-
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-Nimbus is a lightweight robot control platform that replaces heavy ROS2 navigation stacks with an elegant, minimal Python implementation.
+Nimbus is a lightweight robot control platform that replaces ROS2 navigation stacks with pure Python. It controls robots via XRCE-DDS (ESP32) or serial (Neato vacuum), providing reactive obstacle avoidance, a CLI dashboard, and REST/WebSocket APIs.
+
+**Platform**: Jetson Nano (aarch64, Ubuntu 18.04-based L4T), Python 3.10.14
+**Venv**: `~/projects/nimbus-env/bin/activate`
+**Jetson hostname**: `mike-jetson.local` (mDNS)
+
+## Common Commands
+
+```bash
+# Activate environment
+source ~/projects/nimbus-env/bin/activate
+
+# Install in dev mode
+pip install -e ".[dev]"
+
+# Run tests
+nimbus test                                    # all tests
+pytest nimbus/tests/unit/ -v                   # unit tests only
+pytest nimbus/tests/unit/test_safety.py -v     # single file
+pytest nimbus/tests/unit/test_safety.py::TestSafetyController::test_emergency_stop -v  # single test
+nimbus test --regression                       # regression tests
+
+# Run nimbus
+nimbus run --mock --behavior wander            # mock mode (no hardware)
+nimbus run --transport neato                   # Neato serial mode
+nimbus run --behavior wander                   # real ESP32
+
+# Linting/formatting
+ruff check nimbus/                             # lint (configured in pyproject.toml)
+```
 
 ## Architecture
 
-```
-nimbus/
-├── core/       # XRCE agent, state machine, config
-├── sensors/    # LIDAR processing, odometry
-├── navigation/ # VFH algorithm, safety controller
-├── behaviors/  # idle, wander, goto, patrol
-├── api/        # FastAPI REST, WebSocket
-├── cli/        # Typer CLI, Rich dashboard
-├── tests/      # pytest test suite
-└── plugins/    # Extensibility system
-```
+The main control loop runs at 10Hz in `NimbusRunner` (`core/runner.py`):
+1. Read sensors (LIDAR + odometry)
+2. Active behavior computes velocity
+3. Safety controller filters velocity (cannot be bypassed)
+4. Velocity smoother applies acceleration limits
+5. Send to motors via XRCE-DDS or serial
 
-## Key Commands
+**Key layers** (bottom-up):
+- **core/xrce/**: Pure Python XRCE-DDS protocol implementation (agent, session, transport, CDR serialization, message types)
+- **core/node.py**: `XRCENode` and `NimbusNode` — same interface, different transports. `MockNimbusNode` for testing
+- **core/state.py**: `RobotContext` — thread-safe central state with immutable frozen dataclasses (`Pose2D`, `Velocity`, `SensorSnapshot`). State machine: IDLE -> NAVIGATING -> AVOIDING -> EMERGENCY_STOP
+- **sensors/**: `LidarProcessor` (360 points -> 72-sector histogram), `OdometryProcessor`, `ObstacleMap` (sparse grid)
+- **navigation/vfh.py**: Vector Field Histogram obstacle avoidance
+- **navigation/safety.py**: `SafetyController` — EMERGENCY (<15cm: stop), CAUTION (15-40cm: scale speed), NORMAL (>40cm: full)
+- **behaviors/base.py**: `Behavior` ABC with `compute(context) -> Optional[Velocity]`. Priority-based; return None to delegate
+- **api/server.py**: FastAPI on port 8080. REST + WebSocket (`/ws/telemetry` at 10Hz)
+- **cli/app.py**: Typer CLI entry point (`nimbus` command)
 
-```bash
-# Run with default behavior
-nimbus run
-
-# Run with specific behavior
-nimbus run --behavior wander
-
-# Check status
-nimbus status
-
-# Run tests
-nimbus test
-pytest nimbus/tests/
-
-# Emergency stop
-nimbus stop
-```
-
-## Design Principles
-
-1. **Minimal**: No feature without justification
-2. **Testable**: Every component mockable
-3. **Observable**: Rich telemetry everywhere
-4. **Safe**: Hardware safety layer always active
-5. **Extensible**: Plugin system for growth
-6. **Elegant**: Code that reads like poetry
+**Thread model**: Main thread runs control loop; daemon threads for API server, WebSocket broadcast, and ROS2/XRCE spinner. `RobotContext` uses `RLock`, `TopicBuffer` uses `Lock`, all data classes are `frozen=True`.
 
 ## XRCE-DDS Topics
 
-- `/scan` - LaserScan from LIDAR (subscribed)
-- `/odom_raw` - Raw odometry from ESP32 (subscribed)
-- `/cmd_vel` - Velocity commands to motors (published)
+- `/scan` — LaserScan from LIDAR (subscribed)
+- `/odom_raw` — Raw odometry from ESP32 (subscribed)
+- `/cmd_vel` — Velocity commands to motors (published)
 
-## API Endpoints
+LIDAR angle convention: index 0 = backward (180deg), 90 = right, 180 = forward, 270 = left.
 
-**API runs on port 8080** (not 8000).
+## API
 
-Core endpoints:
-- `GET /api/status` - Robot state
-- `GET /api/sensors` - Sensor readings
-- `POST /api/navigate` - Send goal
-- `POST /api/stop` - Emergency stop
-- `WS /ws/telemetry` - Real-time data stream
+**Port 8080** (not 8000).
 
-Motor control endpoints:
-- `POST /api/motor_test/velocity?linear=0.1&angular=0` - Set velocity (requires motor_test mode)
-- `GET /api/motor_test/velocity` - Get current velocity setting
-- `POST /api/behavior/motor_test` - Switch to motor_test mode
+Core: `GET /api/status`, `GET /api/sensors`, `POST /api/navigate`, `POST /api/stop`, `WS /ws/telemetry`
 
-Claude control endpoints (blocking API for precise movement):
-- `POST /api/claude/move?distance=0.5&speed=0.15&timeout=30` - Move forward/backward (meters)
-- `POST /api/claude/turn?degrees=90&speed=0.5&timeout=30` - Turn left/right (degrees)
-- `POST /api/claude/stop` - Cancel current command
-- `GET /api/claude/status` - Get current command status
+Claude control (blocking, precise movement):
+- `POST /api/claude/move?distance=0.5&speed=0.15&timeout=30`
+- `POST /api/claude/turn?degrees=90&speed=0.5&timeout=30`
+- `GET /api/claude/scan` — processed surroundings with compass bearings
+- `POST /api/claude/goto?x=2.0&y=0.5&timeout=60` — VFH nav (blocking)
+- `GET /api/claude/map` — ASCII obstacle map
 
-Claude high-level endpoints (spatial reasoning + navigation):
-- `GET /api/claude/scan` - Processed surroundings: wall distances, openings, closest obstacle (all compass bearings)
-- `POST /api/claude/goto?x=2.0&y=0.5&timeout=60` - Navigate to coordinate with VFH obstacle avoidance (blocking)
-- `GET /api/claude/map` - Accumulated obstacle map as ASCII art + metadata
-
-## Motor Control
-
-Direct motor control via CLI (requires nimbus running):
-
-```bash
-# Quick commands
-nimbus motor forward --speed 0.1    # Move forward
-nimbus motor backward --speed 0.1   # Move backward
-nimbus motor left --speed 0.5       # Turn left
-nimbus motor right --speed 0.5      # Turn right
-nimbus motor stop                   # Stop motors
-
-# Custom velocity
-nimbus motor velocity -l 0.1 -a 0.2  # linear + angular
-```
-
-Via API:
-```bash
-curl -X POST "http://localhost:8080/api/behavior/motor_test"
-curl -X POST "http://localhost:8080/api/motor_test/velocity?linear=0.1&angular=0"
-```
+Motor test: `POST /api/behavior/motor_test` then `POST /api/motor_test/velocity?linear=0.1&angular=0`
 
 ## Testing
 
-```bash
-# All tests
-nimbus test
+Tests use pytest with fixtures from `nimbus/tests/conftest.py`. Key fixtures: `lidar_processor`, `vfh_navigator`, `safety_controller`, `robot_context`, `mock_scan_empty`, `mock_scan_wall_ahead`, `mock_scan_corridor`. Use `MockLaserScan.wall_ahead(distance=0.5)` etc. for custom scans.
 
-# Unit tests only
-pytest nimbus/tests/unit/
+Config: `pyproject.toml` sets `asyncio_mode = "auto"` and `testpaths = ["nimbus/tests"]`.
 
-# Regression tests
-nimbus test --regression
-
-# With coverage
-pytest --cov=nimbus nimbus/tests/
-```
-
-## Neato Quickstart
-
-The Neato D4 runs a Jetson Nano inside the chassis. Development happens on your laptop, deployment runs on the Jetson over SSH.
-
-**Network access**: The Jetson uses Avahi/mDNS and is reachable as `mike-jetson.local` on any shared local network (home WiFi or iPhone hotspot). The Jetson auto-connects to "shwashwa" (priority) or "MK_iphone" hotspot (fallback) via NetworkManager.
+## Deployment (Neato/Jetson)
 
 ```bash
-# Connect to the Jetson (works on any shared network)
 ssh mike@mike-jetson.local
-
-# Activate the environment and run nimbus
-source ~/projects/nimbus-env/bin/activate
-nimbus run --transport neato
-
-# Or from your laptop, one-liner:
-ssh mike@mike-jetson.local "source ~/projects/nimbus-env/bin/activate && nimbus run --transport neato"
+source ~/projects/nimbus-env/bin/activate && nimbus run --transport neato
 ```
 
-**Serial port**: `/dev/ttyACM0` (Neato MCU USB behind dustbin)
-**Jetson hostname**: `mike-jetson` (mDNS: `mike-jetson.local`)
-**Python**: 3.10.14 (built from source, venv at `~/projects/nimbus-env`)
-**Home WiFi IP**: `192.168.68.200` (static, on "shwashwa")
-**iPhone hotspot**: DHCP on "MK_iphone" (use `mike-jetson.local` to find it)
-
-Once nimbus is running on the Jetson, the API is available at `http://mike-jetson.local:8080`.
-
-### Deploying code changes
-
+Serial port: `/dev/ttyACM0`. Deploy code changes:
 ```bash
-# Push from laptop, pull on Jetson
-git push
-ssh mike@mike-jetson.local "cd ~/projects/nimbus && git pull && source ~/projects/nimbus-env/bin/activate && pip install -e ."
+git push && ssh mike@mike-jetson.local "cd ~/projects/nimbus && git pull && source ~/projects/nimbus-env/bin/activate && pip install -e ."
 ```
 
-### Quick serial test (no nimbus needed)
+## Configuration
 
-```bash
-ssh mike@mike-jetson.local "source ~/projects/nimbus-env/bin/activate && python3 -c \"
-import serial, time
-ser = serial.Serial('/dev/ttyACM0', 115200, timeout=2)
-ser.write(b'Help\n')
-time.sleep(0.5)
-print(ser.read(2000).decode('utf-8', errors='ignore')[:500])
-ser.close()
-\""
-```
+YAML config at `~/.nimbus/config.yaml` or `./nimbus.yaml`. Env var overrides with `NIMBUS_` prefix (e.g., `NIMBUS_MAX_SPEED`, `NIMBUS_API_PORT`, `NIMBUS_AGENT_PORT`). Priority: env vars > user config > project config > defaults.
 
-## Robot Documentation
+## Critical Rules
 
-The ESP32/robot hardware documentation is located at `/home/mike/projects/b4m_yahboom/doc_txt`
-
-## Robot Connection
-
-**IMPORTANT:** When the ESP32 is not connecting to the XRCE agent, ALWAYS ask the user to reboot/power cycle the robot. Do not wait or retry silently - immediately ask for a reboot.
-
-**NOTE:** The WiFi is always correctly configured. NEVER suggest re-running WiFi setup - it is not needed.
-
-**NOTE:** The ESP32 firmware is correct and subscribes to `/cmd_vel`. If the agent reports "ESP32 not subscribed to /cmd_vel", the bug is in the Nimbus XRCE agent code, not the firmware.
-
-**TIP:** To check if the robot is physically moving, monitor the pose data in `~/.nimbus/claude_state.json` - if x, y, theta values are changing, the robot is moving.
-
-## Never Do
-
-- Never store secrets in files - use environment variables
-- Never commit runtime data files
-- Never bypass the safety controller
-- Never block the main control loop
-- **NEVER launch `nimbus run` if an instance is already running.** Always check first with `ps aux | grep nimbus | grep -v grep`. Only ONE nimbus instance can run at a time (they compete for the UDP port). If the user already has nimbus running, debug their existing session instead of starting a new one.
+- **NEVER launch `nimbus run` if an instance is already running.** Check with `ps aux | grep nimbus | grep -v grep`. Only one instance can run (UDP port conflict).
+- **When ESP32 won't connect to XRCE agent**: immediately ask user to reboot/power cycle the robot. Don't retry silently.
+- **WiFi is always correctly configured.** Never suggest re-running WiFi setup.
+- **ESP32 firmware subscribes to `/cmd_vel`.** If agent says "not subscribed", the bug is in Nimbus XRCE code, not firmware.
+- **Never bypass the safety controller.** Never block the main control loop.
+- To check if robot is physically moving, monitor `~/.nimbus/claude_state.json` for changing x/y/theta values.
+- ESP32/robot hardware docs are at `/home/mike/projects/b4m_yahboom/doc_txt`.

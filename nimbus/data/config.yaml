@@ -19,8 +19,8 @@ navigation:
   vfh_threshold_low: 0.3    # Clear threshold
 
   # Safety thresholds
-  emergency_distance: 0.15  # Full stop distance (meters)
-  caution_distance: 0.40    # Slow down distance (meters)
+  emergency_distance: 0.25  # Full stop distance (meters)
+  caution_distance: 0.55    # Slow down distance (meters)
   emergency_timeout: 5.0    # Recovery timeout (seconds)
 
 api:
