@@ -321,6 +321,17 @@ class NimbusRunner:
                 self._bumper_turn_direction = 1.0   # turn left (CCW)
             else:
                 self._bumper_turn_direction = -1.0  # default: turn right
+            # Tell the active behavior (e.g. claude_control) so it can end its command as "bumper"
+            on_contact = getattr(current_behavior, 'on_bumper_contact', None)
+            if on_contact:
+                on_contact([
+                    zone for zone, hit in (
+                        ("left_front", bumper.left_front_bumper),
+                        ("left_side", bumper.left_side_bumper),
+                        ("right_front", bumper.right_front_bumper),
+                        ("right_side", bumper.right_side_bumper),
+                    ) if hit
+                ])
 
         # Execute bumper recovery (overrides normal behavior)
         if self._bumper_recovery_phase is not None:
@@ -640,6 +651,11 @@ class NimbusRunner:
         if self._battery_buffer:
             return self._battery_buffer.latest()
         return None
+
+    @property
+    def bumper_recovery_active(self) -> bool:
+        """True while the runner is backing away from a bumper hit."""
+        return self._bumper_recovery_phase is not None
 
     @property
     def bumper_status(self):

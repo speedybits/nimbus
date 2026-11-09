@@ -79,10 +79,12 @@ class TelemetryData(BaseModel):
 class ClaudeCommandResponse(BaseModel):
     """Response for Claude control commands."""
     success: bool = Field(..., description="Whether command completed successfully")
-    result: str = Field(..., description="Result: completed, timeout, cancelled, obstacle")
+    result: str = Field(..., description="Result: completed, timeout, cancelled, obstacle, bumper")
     target: float = Field(..., description="Requested distance (m) or rotation (degrees)")
     actual: float = Field(..., description="Achieved distance (m) or rotation (degrees)")
     duration: float = Field(..., description="Time elapsed in seconds")
+    bumped: bool = Field(False, description="True if a bumper hit ended the command (robot backed away)")
+    bumper_zones: list[str] = Field(default_factory=list, description="Bumper zones hit: left_front, left_side, right_front, right_side")
 
 
 class ClaudeStatusResponse(BaseModel):

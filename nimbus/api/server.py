@@ -559,6 +559,15 @@ def create_app() -> FastAPI:
 
     # --- Claude Control Endpoints ---
 
+    async def _await_bumper_recovery(timeout: float = 5.0) -> None:
+        """After a bumper hit, let the runner finish backing away before answering.
+
+        Otherwise a follow-up command would be overridden by the tail of the recovery.
+        """
+        deadline = time.time() + timeout
+        while _runner and _runner.bumper_recovery_active and time.time() < deadline:
+            await asyncio.sleep(0.1)
+
     @app.post("/api/claude/move", response_model=ClaudeCommandResponse)
     async def claude_move(
         distance: float,
@@ -610,12 +619,17 @@ def create_app() -> FastAPI:
 
         duration = time.time() - result.start_time if result.start_time else 0
 
+        if result.result == "bumper":
+            await _await_bumper_recovery()
+
         return ClaudeCommandResponse(
             success=result.result in ("completed", "completed_open_loop"),
             result=result.result or "unknown",
             target=result.target,
             actual=result.actual or 0.0,
             duration=duration,
+            bumped=result.result == "bumper",
+            bumper_zones=list(result.bumper_zones),
         )
 
     @app.post("/api/claude/turn", response_model=ClaudeCommandResponse)
@@ -669,12 +683,17 @@ def create_app() -> FastAPI:
 
         duration = time.time() - result.start_time if result.start_time else 0
 
+        if result.result == "bumper":
+            await _await_bumper_recovery()
+
         return ClaudeCommandResponse(
             success=result.result in ("completed", "completed_open_loop"),
             result=result.result or "unknown",
             target=result.target,
             actual=result.actual or 0.0,
             duration=duration,
+            bumped=result.result == "bumper",
+            bumper_zones=list(result.bumper_zones),
         )
 
     @app.post("/api/claude/stop")
