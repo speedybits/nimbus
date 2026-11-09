@@ -48,7 +48,7 @@ class WanderBehavior(Behavior):
         backup_duration: float = 1.5,  # seconds to back up
         turn_duration: float = 1.0,    # seconds to turn after backup
         stuck_threshold: float = 1.0,  # seconds before triggering recovery
-        min_safe_distance: float = 0.6,  # ~2 feet - start slowing down at this distance
+        min_safe_distance: float = 0.8,  # start proactive avoidance early for comfortable clearance
     ):
         super().__init__()
         self.forward_speed = forward_speed
@@ -158,13 +158,13 @@ class WanderBehavior(Behavior):
         obstacle_angle = sensors.obstacle_direction
 
         if closest < self.min_safe_distance:
-            # Scale speed: full at min_safe_distance, 20% at emergency distance (0.15m)
-            dist_scale = max(0.2, (closest - 0.15) / (self.min_safe_distance - 0.15))
+            # Scale speed: full at min_safe_distance, 10% at emergency distance (0.25m)
+            dist_scale = max(0.1, (closest - 0.25) / (self.min_safe_distance - 0.25))
 
             # Add steering bias away from obstacle (even if VFH found a path)
             # Stronger bias when closer
-            avoidance_strength = 1.0 - dist_scale  # 0 at safe dist, 0.8 at emergency
-            avoidance_bias = -math.copysign(avoidance_strength * 0.5, obstacle_angle)
+            avoidance_strength = 1.0 - dist_scale  # 0 at safe dist, 0.9 at emergency
+            avoidance_bias = -math.copysign(avoidance_strength * 1.0, obstacle_angle)
             steering = steering + avoidance_bias
         else:
             dist_scale = 1.0

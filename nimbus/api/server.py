@@ -227,6 +227,41 @@ def create_app() -> FastAPI:
             odom_age = safe_float(_runner._odom_buffer.age)
             odom_stale = _runner._odom_buffer.is_stale
 
+        # Bumper detail
+        bumper_data = None
+        bumper = _runner.bumper_status
+        if bumper:
+            bumper_data = {
+                "left_front": bumper.left_front_bumper,
+                "left_side": bumper.left_side_bumper,
+                "right_front": bumper.right_front_bumper,
+                "right_side": bumper.right_side_bumper,
+                "left_wheel_drop": bumper.left_wheel_drop,
+                "right_wheel_drop": bumper.right_wheel_drop,
+                "any": bumper.any_bumper,
+            }
+
+        # Cliff sensors
+        cliff_data = None
+        cliff = _runner.cliff_status
+        if cliff:
+            cliff_data = {
+                "left_drop_mm": cliff.left_drop_mm,
+                "right_drop_mm": cliff.right_drop_mm,
+                "wall_sensor_mm": cliff.wall_sensor_mm,
+                "cliff_detected": cliff.cliff_detected,
+            }
+
+        # Battery
+        battery_data = None
+        battery = _runner.battery_status
+        if battery:
+            battery_data = {
+                "percent": battery.battery_percent,
+                "charging": battery.charging,
+                "voltage_mv": battery.voltage_mv,
+            }
+
         return SensorResponse(
             timestamp=sensors.timestamp.isoformat(),
             pose={
@@ -243,6 +278,9 @@ def create_app() -> FastAPI:
             lidar_histogram=[safe_float(r) for r in sensors.lidar_ranges[:72]],
             odom_age=odom_age,
             odom_stale=odom_stale,
+            bumpers=bumper_data,
+            cliff=cliff_data,
+            battery=battery_data,
         )
 
     @app.post("/api/navigate")
@@ -301,6 +339,30 @@ def create_app() -> FastAPI:
             raise HTTPException(503, detail="Nimbus not initialized")
 
         return _runner.safety_status
+
+    # --- Dock Endpoints ---
+
+    @app.post("/api/dock")
+    async def start_docking():
+        """Start docking with the charging station."""
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        success = _runner.dock()
+        if not success:
+            raise HTTPException(400, detail="Failed to start docking")
+        return {"status": "ok", "behavior": "dock"}
+
+    @app.get("/api/dock/status")
+    async def get_dock_status():
+        """Get current docking status."""
+        if not _runner:
+            raise HTTPException(503, detail="Nimbus not initialized")
+
+        status = _runner.get_dock_status()
+        if status is None:
+            raise HTTPException(404, detail="Dock behavior not available")
+        return status
 
     # --- Motor Test Endpoints ---
 
@@ -499,6 +561,15 @@ def create_app() -> FastAPI:
 
     # --- Claude Control Endpoints ---
 
+    async def _await_bumper_recovery(timeout: float = 5.0) -> None:
+        """After a bumper hit, let the runner finish backing away before answering.
+
+        Otherwise a follow-up command would be overridden by the tail of the recovery.
+        """
+        deadline = time.time() + timeout
+        while _runner and _runner.bumper_recovery_active and time.time() < deadline:
+            await asyncio.sleep(0.1)
+
     @app.post("/api/claude/move", response_model=ClaudeCommandResponse)
     async def claude_move(
         distance: float,
@@ -550,12 +621,17 @@ def create_app() -> FastAPI:
 
         duration = time.time() - result.start_time if result.start_time else 0
 
+        if result.result == "bumper":
+            await _await_bumper_recovery()
+
         return ClaudeCommandResponse(
             success=result.result in ("completed", "completed_open_loop"),
             result=result.result or "unknown",
             target=result.target,
             actual=result.actual or 0.0,
             duration=duration,
+            bumped=result.result == "bumper",
+            bumper_zones=list(result.bumper_zones),
         )
 
     @app.post("/api/claude/turn", response_model=ClaudeCommandResponse)
@@ -609,12 +685,17 @@ def create_app() -> FastAPI:
 
         duration = time.time() - result.start_time if result.start_time else 0
 
+        if result.result == "bumper":
+            await _await_bumper_recovery()
+
         return ClaudeCommandResponse(
             success=result.result in ("completed", "completed_open_loop"),
             result=result.result or "unknown",
             target=result.target,
             actual=result.actual or 0.0,
             duration=duration,
+            bumped=result.result == "bumper",
+            bumper_zones=list(result.bumper_zones),
         )
 
     @app.post("/api/claude/stop")

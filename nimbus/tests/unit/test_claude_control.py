@@ -458,3 +458,111 @@ class TestOpenLoopFallback:
         """ClaudeCommand.open_loop should default to False."""
         cmd = create_move_command(1.0)
         assert cmd.open_loop is False
+
+
+class TestBumperContact:
+    """A bumper hit must end the command as "bumper", not report success."""
+
+    @pytest.fixture
+    def behavior(self):
+        b = ClaudeControlBehavior()
+        b.activate()
+        return b
+
+    @pytest.fixture
+    def ctx(self):
+        ctx = RobotContext()
+        ctx.update_sensors(SensorSnapshot(
+            timestamp=datetime.now(),
+            pose=Pose2D(x=0.0, y=0.0, theta=0.0),
+            velocity=Velocity(linear=0.0, angular=0.0),
+            lidar_ranges=tuple([2.0] * 360),
+            closest_obstacle=2.0,
+            obstacle_direction=0.0,
+        ))
+        return ctx
+
+    def test_bumper_ends_move_with_zones(self, behavior, ctx):
+        cmd = create_move_command(0.4, speed=0.1)
+        behavior.set_command(cmd)
+        behavior.compute(ctx)
+
+        behavior.on_bumper_contact(["left_front"])
+
+        result = behavior.get_result()
+        assert result.result == "bumper"
+        assert result.bumper_zones == ["left_front"]
+        assert behavior.compute(ctx).is_stopped()
+        assert behavior.wait_for_completion(timeout=0.1)
+
+    def test_bumper_open_loop_estimates_progress(self, behavior, ctx):
+        cmd = create_move_command(0.4, speed=0.1)
+        behavior.set_command(cmd)
+        cmd.open_loop = True
+        cmd.start_time = time.time() - 1.5  # 1.5 s at 0.1 m/s
+
+        behavior.on_bumper_contact(["right_side"])
+
+        assert cmd.result == "bumper"
+        assert abs(cmd.actual - 0.15) < 0.02
+
+    def test_bumper_open_loop_actual_capped_at_target(self, behavior, ctx):
+        cmd = create_move_command(0.1, speed=0.1)
+        behavior.set_command(cmd)
+        cmd.open_loop = True
+        cmd.start_time = time.time() - 5.0
+
+        behavior.on_bumper_contact(["left_side"])
+
+        assert cmd.actual == pytest.approx(0.1)
+
+    def test_bumper_ends_turn(self, behavior, ctx):
+        cmd = create_turn_command(90.0, speed=0.5)
+        behavior.set_command(cmd)
+        behavior.compute(ctx)
+
+        behavior.on_bumper_contact(["right_front"])
+
+        assert behavior.get_result().result == "bumper"
+
+    def test_bumper_without_command_is_ignored(self, behavior):
+        behavior.on_bumper_contact(["left_front"])
+        assert behavior.get_result() is None
+
+    def test_bumper_after_completion_does_not_overwrite(self, behavior, ctx):
+        cmd = create_move_command(0.4, speed=0.1)
+        behavior.set_command(cmd)
+        behavior.compute(ctx)
+        behavior.stop_command()  # result becomes "cancelled"
+
+        behavior.on_bumper_contact(["left_front"])
+
+        assert cmd.result == "cancelled"
+        assert cmd.bumper_zones == []
+
+    def test_runner_notifies_active_behavior(self):
+        """Runner calls on_bumper_contact when a bumper is pressed during a claude_control move."""
+        from unittest.mock import PropertyMock, patch
+        from nimbus.core.config import NimbusConfig
+        from nimbus.core.neato.transport import NeatoBumperData
+        from nimbus.core.runner import NimbusRunner
+
+        config = NimbusConfig()
+        config.simulation.enabled = True
+        config.simulation.map_template = "empty_room"
+        runner = NimbusRunner(config=config, sim=True)
+        try:
+            runner.start()
+            runner.set_behavior("claude_control")
+            behavior = runner._behavior_manager.get_behavior("claude_control")
+            cmd = create_move_command(0.4, speed=0.1)
+            behavior.set_command(cmd)
+
+            hit = NeatoBumperData(left_front_bumper=True, right_side_bumper=True)
+            with patch.object(NimbusRunner, "bumper_status", new_callable=PropertyMock, return_value=hit):
+                runner._control_step()
+
+            assert cmd.result == "bumper"
+            assert cmd.bumper_zones == ["left_front", "right_side"]
+        finally:
+            runner.stop()

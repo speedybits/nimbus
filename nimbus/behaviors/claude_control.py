@@ -42,6 +42,7 @@ class ClaudeCommand:
     accumulated_rotation: float = 0.0  # for tracking rotation across wraparound
     last_distance: float = 0.0  # track last computed distance for move commands
     open_loop: bool = False  # True when using time-based fallback (no odom feedback)
+    bumper_zones: list = field(default_factory=list)  # zones hit when result == "bumper"
 
 
 def _normalize_angle(angle: float) -> float:
@@ -158,6 +159,29 @@ class ClaudeControlBehavior(Behavior):
                 self._completion_event.set()
                 return self._command
             return None
+
+    def on_bumper_contact(self, zones: list) -> None:
+        """Called by the runner when a bumper is hit and recovery starts.
+
+        The runner skips compute() while it backs away, so the behavior never sees the
+        bump. End the in-flight command here, reporting how far it got, so the caller
+        learns it hit something instead of being told it succeeded.
+        """
+        with self._lock:
+            cmd = self._command
+            if cmd is None or cmd.result is not None:
+                return
+            if self._state not in (CommandState.MOVING, CommandState.TURNING):
+                return
+            elapsed = time.time() - cmd.start_time if cmd.start_time else 0.0
+            self._complete_command("bumper")
+            cmd.bumper_zones = list(zones)
+            if cmd.open_loop:
+                # No odometry feedback: estimate progress from time at commanded speed
+                if cmd.command_type == "move":
+                    cmd.actual = min(abs(cmd.target), elapsed * cmd.speed)
+                else:
+                    cmd.actual = min(abs(cmd.target), math.degrees(elapsed * cmd.speed))
 
     def wait_for_completion(self, timeout: Optional[float] = None) -> bool:
         """

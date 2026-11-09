@@ -115,6 +115,9 @@ class SensorFusion:
         closest_obstacle: float,
         obstacle_direction: float,
         bumper_triggered: bool = False,
+        lidar_intensities: tuple[float, ...] = tuple([0.0] * 360),
+        charging: bool = False,
+        battery_percent: int = 0,
     ) -> SensorSnapshot:
         """
         Create a new sensor snapshot from all sensor data.
@@ -126,6 +129,9 @@ class SensorFusion:
             closest_obstacle: Distance to nearest obstacle
             obstacle_direction: Angle to nearest obstacle
             bumper_triggered: True if any physical bumper is pressed
+            lidar_intensities: 360 LIDAR intensity values
+            charging: True if charger is active
+            battery_percent: Battery level 0-100
 
         Returns:
             Immutable SensorSnapshot
@@ -138,6 +144,9 @@ class SensorFusion:
             closest_obstacle=closest_obstacle,
             obstacle_direction=obstacle_direction,
             bumper_triggered=bumper_triggered,
+            lidar_intensities=lidar_intensities,
+            charging=charging,
+            battery_percent=battery_percent,
         )
         self._last_snapshot = snapshot
         return snapshot

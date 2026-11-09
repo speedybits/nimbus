@@ -340,13 +340,58 @@ class LiveDashboard:
                 batt_style = "yellow"
             else:
                 batt_style = "bold red"
-            charging = " (charging)" if battery.charging else ""
-            table.add_row("Battery:", Text(f"{pct}%{charging}", style=batt_style))
+            charging = " ⚡" if battery.charging else ""
+            batt_text = f"{pct}%{charging}"
+            if battery.voltage_mv:
+                batt_text += f" [{battery.voltage_mv}mV]"
+            table.add_row("Battery:", Text(batt_text, style=batt_style))
+        else:
+            table.add_row("Battery:", Text("--", style="dim"))
 
-        # Bumpers
-        sensors = context.sensors
-        if sensors and sensors.bumper_triggered:
-            table.add_row("Bumpers:", Text("CONTACT", style="bold red"))
+        # Bumpers (contact sensors only)
+        bumper = self.runner.bumper_status
+        if bumper:
+            zones = []
+            if bumper.left_front_bumper:
+                zones.append("LF")
+            if bumper.right_front_bumper:
+                zones.append("RF")
+            if bumper.left_side_bumper:
+                zones.append("LS")
+            if bumper.right_side_bumper:
+                zones.append("RS")
+            if zones:
+                table.add_row("Bumpers:", Text(" ".join(zones), style="bold red"))
+            else:
+                table.add_row("Bumpers:", Text("clear", style="dim green"))
+        else:
+            table.add_row("Bumpers:", Text("--", style="dim"))
+
+        # Cliff sensors
+        cliff = self.runner.cliff_status
+        if cliff:
+            left_style = "bold red" if cliff.left_drop_mm > cliff.CLIFF_THRESHOLD_MM else "green"
+            right_style = "bold red" if cliff.right_drop_mm > cliff.CLIFF_THRESHOLD_MM else "green"
+            cliff_text = Text()
+            cliff_text.append(f"L={cliff.left_drop_mm}mm ", style=left_style)
+            cliff_text.append(f"R={cliff.right_drop_mm}mm", style=right_style)
+            table.add_row("Cliff:", cliff_text)
+        else:
+            table.add_row("Cliff:", Text("--", style="dim"))
+
+        # Wheel drop (lifted off ground)
+        if bumper:
+            if bumper.left_wheel_drop or bumper.right_wheel_drop:
+                drops = []
+                if bumper.left_wheel_drop:
+                    drops.append("L")
+                if bumper.right_wheel_drop:
+                    drops.append("R")
+                table.add_row("Lift:", Text(" ".join(drops), style="bold red"))
+            else:
+                table.add_row("Lift:", Text("clear", style="dim green"))
+        else:
+            table.add_row("Lift:", Text("--", style="dim"))
 
         # Show wander speed settings
         wander = self.runner._behavior_manager.get_behavior("wander")
@@ -379,12 +424,14 @@ class LiveDashboard:
 
     def _lidar_to_world(self, index: int, distance: float, pose, deg_per_reading: float) -> tuple:
         """Convert LIDAR polar reading to world coordinates."""
-        # LIDAR angle in robot frame (index 0 = back, index 180 = front)
-        # Add pi to convert correctly to world frame
         lidar_angle_rad = math.radians(index * deg_per_reading)
 
         # Convert to world frame using robot heading
-        world_angle = pose.theta + math.pi + lidar_angle_rad
+        # Neato: index 0 = forward; Sim: index 0 = backward (add pi)
+        if self.runner._neato:
+            world_angle = pose.theta + lidar_angle_rad
+        else:
+            world_angle = pose.theta + math.pi + lidar_angle_rad
 
         world_x = pose.x + distance * math.cos(world_angle)
         world_y = pose.y + distance * math.sin(world_angle)
@@ -424,7 +471,12 @@ class LiveDashboard:
             if distance < max_display_range and distance > 0.05:
                 # Convert polar to cartesian (index -> actual angle)
                 actual_angle_deg = i * degrees_per_reading
-                angle_rad = math.radians(actual_angle_deg - 90)  # 0 deg = forward = up
+                # Neato: index 0 = forward, increases CW
+                # Sim: index 0 = backward, increases CCW
+                if self.runner._neato:
+                    angle_rad = math.radians(90 + actual_angle_deg)
+                else:
+                    angle_rad = math.radians(actual_angle_deg - 90)
                 r = distance * scale
 
                 x = int(center_x + r * math.cos(angle_rad) * 2)  # *2 for aspect ratio
@@ -832,10 +884,39 @@ class LiveDashboard:
                     "theta": context.target.theta
                 } if context.target else None
             },
-            "logs": self._log.get_recent(20),
-            "available_behaviors": list(self.runner.available_behaviors),
-            "api_port": 8080
         }
+
+        bumper = self.runner.bumper_status
+        if bumper:
+            state["robot"]["bumpers"] = {
+                "left_front": bumper.left_front_bumper,
+                "left_side": bumper.left_side_bumper,
+                "right_front": bumper.right_front_bumper,
+                "right_side": bumper.right_side_bumper,
+                "left_wheel_drop": bumper.left_wheel_drop,
+                "right_wheel_drop": bumper.right_wheel_drop,
+                "any_contact": bumper.any_bumper,
+            }
+
+        cliff = self.runner.cliff_status
+        if cliff:
+            state["robot"]["cliff"] = {
+                "left_drop_mm": cliff.left_drop_mm,
+                "right_drop_mm": cliff.right_drop_mm,
+                "cliff_detected": cliff.cliff_detected,
+            }
+
+        battery = self.runner.battery_status
+        if battery and hasattr(battery, "battery_percent"):
+            state["robot"]["battery"] = {
+                "percent": battery.battery_percent,
+                "charging": battery.charging,
+                "voltage_mv": battery.voltage_mv,
+            }
+
+        state["logs"] = self._log.get_recent(20)
+        state["available_behaviors"] = list(self.runner.available_behaviors)
+        state["api_port"] = 8080
 
         state_path = Path.home() / ".nimbus" / "claude_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

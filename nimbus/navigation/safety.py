@@ -29,13 +29,13 @@ class SafetyLevel(Enum):
 class SafetyConfig:
     """Safety controller configuration."""
 
-    emergency_distance: float = 0.15  # Full stop threshold (meters)
-    caution_distance: float = 0.40    # Speed reduction threshold (meters)
+    emergency_distance: float = 0.25  # Full stop threshold (meters)
+    caution_distance: float = 0.55    # Speed reduction threshold (meters)
     emergency_timeout: float = 5.0    # Seconds before auto-recovery attempt
     max_linear_speed: float = 0.30    # Maximum forward speed (m/s)
     max_angular_speed: float = 1.0    # Maximum rotation speed (rad/s)
     reverse_speed: float = 0.1        # Speed for backing away from obstacles
-    forward_arc_deg: float = 45.0     # Only react to obstacles within ±this angle
+    forward_arc_deg: float = 60.0     # Only react to obstacles within ±this angle
 
 
 class SafetyController:

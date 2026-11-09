@@ -41,6 +41,9 @@ class SensorResponse(BaseModel):
     lidar_histogram: list[Optional[float]] = Field(default_factory=list, description="Polar histogram (72 sectors)")
     odom_age: Optional[float] = Field(None, description="Seconds since last odometry message")
     odom_stale: Optional[bool] = Field(None, description="Whether odometry data is stale (>1s old)")
+    bumpers: Optional[dict] = Field(None, description="Per-zone bumper states (Neato only)")
+    cliff: Optional[dict] = Field(None, description="Cliff sensor distances in mm (Neato only)")
+    battery: Optional[dict] = Field(None, description="Battery state: percent, charging, voltage_mv")
 
 
 class NavigateRequest(BaseModel):
@@ -76,10 +79,12 @@ class TelemetryData(BaseModel):
 class ClaudeCommandResponse(BaseModel):
     """Response for Claude control commands."""
     success: bool = Field(..., description="Whether command completed successfully")
-    result: str = Field(..., description="Result: completed, timeout, cancelled, obstacle")
+    result: str = Field(..., description="Result: completed, timeout, cancelled, obstacle, bumper")
     target: float = Field(..., description="Requested distance (m) or rotation (degrees)")
     actual: float = Field(..., description="Achieved distance (m) or rotation (degrees)")
     duration: float = Field(..., description="Time elapsed in seconds")
+    bumped: bool = Field(False, description="True if a bumper hit ended the command (robot backed away)")
+    bumper_zones: list[str] = Field(default_factory=list, description="Bumper zones hit: left_front, left_side, right_front, right_side")
 
 
 class ClaudeStatusResponse(BaseModel):

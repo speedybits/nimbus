@@ -97,10 +97,17 @@ class NeatoAnalogData:
 
 @dataclass
 class NeatoBatteryData:
-    """Battery state from GetCharger."""
+    """Battery/charger state from GetCharger.
+
+    ext_power_present: True when robot detects external power (sitting on dock).
+    raw: all key-value pairs from the response, for discovery/debugging.
+    """
     battery_percent: int = 0
     charging: bool = False
     voltage_mv: int = 0
+    ext_power_present: bool = False
+    battery_over_temp: bool = False
+    raw: dict = field(default_factory=dict)
 
 
 class NeatoTransport:
@@ -143,6 +150,9 @@ class NeatoTransport:
         # Enter test mode and start LIDAR
         self._send_command("TestMode On")
         self._send_command("SetLDSRotation On")
+
+        # Wait for LIDAR motor to reach stable rotation speed (~3-5s)
+        time.sleep(4)
 
     def disconnect(self) -> None:
         """Stop motors, LDS, exit TestMode, close port."""
@@ -244,20 +254,40 @@ class NeatoTransport:
         )
 
     def get_charger(self) -> NeatoBatteryData:
-        """Get battery/charger state."""
+        """Get battery/charger state.
+
+        Parses all known fields from GetCharger and preserves the full
+        raw response for discovery of undocumented fields.
+        """
         lines = self._send_command("GetCharger")
         data = self._parse_key_value(lines)
+        # VBattV can be float like "15.57" (volts) — convert to millivolts
+        vbatt_str = data.get("VBattV", "0")
+        vbatt_v = float(vbatt_str)
+        voltage_mv = int(vbatt_v * 1000) if vbatt_v < 100 else int(vbatt_v)
         return NeatoBatteryData(
-            battery_percent=int(data.get("FuelPercent", "0")),
+            battery_percent=int(float(data.get("FuelPercent", "0"))),
             charging=data.get("ChargingActive", "0") != "0",
-            voltage_mv=int(data.get("VBattV", "0")),
+            voltage_mv=voltage_mv,
+            ext_power_present=data.get("ExtPwrPresent", "0") != "0",
+            battery_over_temp=data.get("BatteryOverTemp", "0") != "0",
+            raw=data,
         )
+
+    def raw_command(self, cmd: str) -> list[str]:
+        """Send an arbitrary command and return raw response lines.
+
+        Useful for protocol discovery and debugging.
+        """
+        return self._send_command(cmd)
 
     def _send_command(self, cmd: str) -> list[str]:
         """
         Send a command and read the response.
 
-        Writes cmd + newline, reads lines until ctrl-z (0x1A) or timeout.
+        Writes cmd + newline, reads until ctrl-z (0x1A) terminator or timeout.
+        Uses bulk read for speed — reads all available bytes each iteration
+        instead of one line at a time.
 
         Returns:
             List of response lines (stripped, non-empty)
@@ -268,25 +298,37 @@ class NeatoTransport:
         self._serial.write(f"{cmd}\n".encode("ascii"))
         self._serial.flush()
 
-        lines = []
+        buf = bytearray()
         deadline = time.time() + self._timeout
 
         while time.time() < deadline:
-            raw = self._serial.readline()
-            if not raw:
-                if not self._serial.is_open:
-                    raise SerialDisconnectedError("Serial port closed unexpectedly")
-                break
-            line = raw.decode("ascii", errors="replace").strip()
-            if "\x1a" in line:
-                # ctrl-z marks end of response
-                clean = line.replace("\x1a", "").strip()
-                if clean:
-                    lines.append(clean)
-                break
-            if line:
-                lines.append(line)
+            # Read all available bytes at once
+            waiting = self._serial.in_waiting
+            if waiting > 0:
+                chunk = self._serial.read(waiting)
+                if not chunk:
+                    if not self._serial.is_open:
+                        raise SerialDisconnectedError("Serial port closed unexpectedly")
+                    break
+                buf.extend(chunk)
+                # Check for ctrl-z terminator
+                if b"\x1a" in buf:
+                    break
+            else:
+                # Brief sleep to avoid busy-waiting, then try readline as fallback
+                raw = self._serial.readline()
+                if not raw:
+                    if not self._serial.is_open:
+                        raise SerialDisconnectedError("Serial port closed unexpectedly")
+                    break
+                buf.extend(raw)
+                if b"\x1a" in buf:
+                    break
 
+        # Parse into lines
+        text = buf.decode("ascii", errors="replace")
+        text = text.split("\x1a")[0]  # Trim at terminator
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
         return lines
 
     @staticmethod

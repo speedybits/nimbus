@@ -424,3 +424,53 @@ class TestClaudeGotoEndpoint:
         assert data["final_pose"]["heading"] == pytest.approx(0, abs=1)
 
         server_module._runner = original
+
+
+class TestClaudeBumperResult:
+    """/api/claude/move and /turn must report a bumper hit instead of success."""
+
+    def _arm(self, mock_runner, delay=0.3):
+        import threading
+        from nimbus.behaviors.claude_control import ClaudeControlBehavior
+
+        behavior = ClaudeControlBehavior()
+        behavior.activate()
+        mock_runner._behavior_manager.get_behavior.return_value = behavior
+        mock_runner.current_behavior = "claude_control"
+        mock_runner.bumper_recovery_active = False
+        threading.Timer(delay, lambda: behavior.on_bumper_contact(["left_front"])).start()
+
+    def test_move_reports_bumper(self, client, mock_runner):
+        self._arm(mock_runner)
+        data = client.post("/api/claude/move", params={"distance": 0.4, "speed": 0.1, "timeout": 5}).json()
+        assert data["success"] is False
+        assert data["result"] == "bumper"
+        assert data["bumped"] is True
+        assert data["bumper_zones"] == ["left_front"]
+
+    def test_turn_reports_bumper(self, client, mock_runner):
+        self._arm(mock_runner)
+        data = client.post("/api/claude/turn", params={"degrees": 90, "timeout": 5}).json()
+        assert data["result"] == "bumper"
+        assert data["bumped"] is True
+
+    def test_move_waits_for_recovery_before_answering(self, client, mock_runner):
+        import threading, time
+        self._arm(mock_runner)
+        mock_runner.bumper_recovery_active = True
+        threading.Timer(1.0, lambda: setattr(mock_runner, "bumper_recovery_active", False)).start()
+        t0 = time.time()
+        data = client.post("/api/claude/move", params={"distance": 0.4, "speed": 0.1, "timeout": 5}).json()
+        assert data["bumped"] is True
+        assert time.time() - t0 >= 1.0
+
+    def test_normal_move_not_flagged(self, client, mock_runner):
+        from nimbus.behaviors.claude_control import ClaudeControlBehavior
+        behavior = ClaudeControlBehavior()
+        behavior.activate()
+        mock_runner._behavior_manager.get_behavior.return_value = behavior
+        mock_runner.current_behavior = "claude_control"
+        # Time out quickly rather than drive: no bumper involved
+        data = client.post("/api/claude/move", params={"distance": 0.4, "speed": 0.1, "timeout": 0.2}).json()
+        assert data["bumped"] is False
+        assert data["bumper_zones"] == []

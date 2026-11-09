@@ -146,4 +146,7 @@ class SimNeatoTransport(NeatoTransport):
 
     def get_charger(self) -> NeatoBatteryData:
         """Infinite battery in simulation."""
-        return NeatoBatteryData(battery_percent=100, charging=False, voltage_mv=14400)
+        return NeatoBatteryData(
+            battery_percent=100, charging=False, voltage_mv=14400,
+            ext_power_present=False, battery_over_temp=False,
+        )

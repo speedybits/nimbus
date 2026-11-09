@@ -318,7 +318,7 @@ class ExploreBehavior(Behavior):
 
         # Proactive obstacle slowdown
         if closest < self.min_safe_distance:
-            dist_scale = max(0.2, (closest - 0.15) / (self.min_safe_distance - 0.15))
+            dist_scale = max(0.1, (closest - 0.25) / (self.min_safe_distance - 0.25))
         else:
             dist_scale = 1.0
 
